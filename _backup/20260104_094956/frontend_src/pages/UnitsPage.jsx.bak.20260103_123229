@@ -1,0 +1,161 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api.js";
+
+export default function UnitsPage() {
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [selectedPropertyId, setSelectedPropertyId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const [form, setForm] = useState({
+    label: "",
+    bedrooms: "",
+    bathrooms: "",
+    sqft: "",
+    rent: "",
+    status: "",
+    notes: "",
+  });
+
+  async function load() {
+    setErr("");
+    setLoading(true);
+    try {
+      const [pRes, uRes] = await Promise.all([api.get("/properties"), api.get("/units")]);
+      setProperties(pRes.data || []);
+      setUnits(uRes.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load properties/units");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const filteredUnits = useMemo(() => {
+    const arr = Array.isArray(units) ? units : [];
+    if (!selectedPropertyId) return arr;
+    const pid = Number(selectedPropertyId);
+    return arr.filter((u) => Number(u.property_id) === pid);
+  }, [units, selectedPropertyId]);
+
+  async function createUnit(e) {
+    e.preventDefault();
+    setErr("");
+
+    if (!selectedPropertyId) {
+      setErr("Select a Property first (Units are tied to a Property now).");
+      return;
+    }
+
+    const payload = {
+      property_id: Number(selectedPropertyId),
+      label: (form.label || "").trim() || "Unit",
+      bedrooms: form.bedrooms === "" ? null : Number(form.bedrooms),
+      bathrooms: form.bathrooms === "" ? null : Number(form.bathrooms),
+      sqft: form.sqft === "" ? null : Number(form.sqft),
+      rent: form.rent === "" ? null : Number(form.rent),
+      status: (form.status || "").trim() || null,
+      notes: (form.notes || "").trim() || null,
+    };
+
+    setLoading(true);
+    try {
+      await api.post("/units", payload);
+      setForm({ label: "", bedrooms: "", bathrooms: "", sqft: "", rent: "", status: "", notes: "" });
+      await load();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to create unit");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 10 }}>Units</h2>
+
+      {err ? <div style={alertStyle}>{typeof err === "string" ? err : JSON.stringify(err)}</div> : null}
+
+      <div style={{ background: "white", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb", marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>Property</div>
+        <select value={selectedPropertyId} onChange={(e) => setSelectedPropertyId(e.target.value)} style={inputStyle}>
+          <option value="">All properties…</option>
+          {(Array.isArray(properties) ? properties : []).map((p) => (
+            <option key={p.id} value={p.id}>{p.name} (#{p.id})</option>
+          ))}
+        </select>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "420px 1fr", gap: 16 }}>
+        <section style={cardStyle}>
+          <div style={{ fontWeight: 700, marginBottom: 10 }}>Add Unit</div>
+          <form onSubmit={createUnit} style={{ display: "grid", gap: 10 }}>
+            <label>
+              Label (optional)
+              <input value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} style={inputStyle} />
+            </label>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label>Beds<input value={form.bedrooms} onChange={(e) => setForm((f) => ({ ...f, bedrooms: e.target.value }))} style={inputStyle} /></label>
+              <label>Baths<input value={form.bathrooms} onChange={(e) => setForm((f) => ({ ...f, bathrooms: e.target.value }))} style={inputStyle} /></label>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label>Sqft<input value={form.sqft} onChange={(e) => setForm((f) => ({ ...f, sqft: e.target.value }))} style={inputStyle} /></label>
+              <label>Rent<input value={form.rent} onChange={(e) => setForm((f) => ({ ...f, rent: e.target.value }))} style={inputStyle} /></label>
+            </div>
+
+            <label>Status<input value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={inputStyle} /></label>
+            <label>Notes<textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} style={{ ...inputStyle, height: 80 }} /></label>
+
+            <button type="submit" style={buttonStyle} disabled={loading}>
+              {loading ? "Working..." : "Create Unit"}
+            </button>
+          </form>
+        </section>
+
+        <section style={cardStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700 }}>Units</div>
+            <button onClick={load} style={buttonStyle} disabled={loading}>{loading ? "Loading..." : "Refresh"}</button>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["ID", "Property", "Label", "Beds", "Baths", "Rent"].map((h) => <th key={h} style={thStyle}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredUnits.map((u) => (
+                <tr key={u.id}>
+                  <td style={tdStyle}>{u.id}</td>
+                  <td style={tdStyle}>{u.property_id ?? ""}</td>
+                  <td style={tdStyle}>{(u.label || "").trim() || `Unit ${u.id}`}</td>
+                  <td style={tdStyle}>{u.bedrooms ?? ""}</td>
+                  <td style={tdStyle}>{u.bathrooms ?? ""}</td>
+                  <td style={tdStyle}>{u.rent ?? ""}</td>
+                </tr>
+              ))}
+              {filteredUnits.length === 0 ? (
+                <tr><td colSpan={6} style={{ padding: 12, color: "#6b7280" }}>No units found.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+const cardStyle = { background: "white", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb" };
+const inputStyle = { width: "100%", marginTop: 6, padding: "10px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "white" };
+const buttonStyle = { padding: "10px 12px", borderRadius: 10, border: "1px solid #111827", background: "#111827", color: "white", fontWeight: 700, cursor: "pointer" };
+const thStyle = { textAlign: "left", padding: "10px 8px", borderBottom: "1px solid #e5e7eb", color: "#374151" };
+const tdStyle = { padding: "10px 8px", borderBottom: "1px solid #f3f4f6" };
+const alertStyle = { background: "#fee2e2", border: "1px solid #fecaca", padding: 10, borderRadius: 10, marginBottom: 12 };

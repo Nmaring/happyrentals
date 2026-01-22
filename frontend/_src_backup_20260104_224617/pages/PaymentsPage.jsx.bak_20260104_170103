@@ -1,0 +1,657 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api";
+
+function isoToday() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+
+const METHOD_OPTIONS = [
+  { value: "cash", label: "Cash" },
+  { value: "check", label: "Check" },
+  { value: "money_order", label: "Money Order" },
+  { value: "ach", label: "Bank Transfer (ACH)" },
+  { value: "wire", label: "Wire Transfer" },
+
+  { value: "credit_card", label: "Credit Card" },
+  { value: "debit_card", label: "Debit Card" },
+  { value: "apple_pay", label: "Apple Pay" },
+  { value: "google_pay", label: "Google Pay" },
+
+  { value: "venmo", label: "Venmo" },
+  { value: "cashapp", label: "Cash App" },
+  { value: "zelle", label: "Zelle" },
+  { value: "paypal", label: "PayPal" },
+
+  { value: "stripe", label: "Stripe (processor)" },
+  { value: "square", label: "Square (processor)" },
+
+  { value: "other", label: "Other" },
+];
+
+function deriveChannel(method) {
+  const m = (method || "").toLowerCase();
+  if (m === "cash") return "cash";
+  if (m === "check" || m === "money_order") return "check";
+  if (m === "ach" || m === "wire") return "bank";
+  if (["credit_card", "debit_card", "apple_pay", "google_pay"].includes(m)) return "card";
+  if (["venmo", "cashapp", "zelle", "paypal"].includes(m)) return "p2p";
+  if (["stripe", "square"].includes(m)) return "processor";
+  return "other";
+}
+
+function methodToDefaults(method) {
+  const m = (method || "").toLowerCase();
+  const channel = deriveChannel(m);
+
+  // processor defaults
+  let processor = "none";
+  if (channel === "cash" || channel === "check") processor = "manual";
+  if (channel === "processor") processor = m; // stripe/square
+  return { channel, processor };
+}
+
+function needsHandle(method) {
+  return ["venmo", "cashapp", "zelle", "paypal"].includes((method || "").toLowerCase());
+}
+
+function needsLast4(method) {
+  return ["credit_card", "debit_card", "apple_pay", "google_pay"].includes((method || "").toLowerCase());
+}
+
+function needsExternalRef(method) {
+  const m = (method || "").toLowerCase();
+  return needsHandle(m) || needsLast4(m) || ["ach", "wire", "stripe", "square", "other"].includes(m);
+}
+
+
+function Modal({ title, open, onClose, children }) {
+  if (!open) return null;
+
+  const overlayStyle = {
+    ...styles.overlay,
+    alignItems: "flex-start",
+    overflowY: "auto",
+    padding: 18,
+  };
+
+  const modalStyle = {
+    ...styles.modal,
+    maxHeight: "calc(100vh - 80px)",
+    margin: "40px auto",
+    display: "flex",
+    flexDirection: "column",
+  };
+
+  const bodyStyle = {
+    ...styles.modalBody,
+    overflowY: "auto",
+    flex: 1,
+    minHeight: 0,
+  };
+
+  return (
+    <div style={overlayStyle} onMouseDown={onClose}>
+      <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={{ fontWeight: 800, fontSize: 18 }}>{title}</div>
+          <button style={styles.btnGhost} onClick={onClose}>✕</button>
+        </div>
+        <div style={bodyStyle}>{children}</div>
+      </div>
+    </div>
+  );
+}
+export default function PaymentsPage() {
+  const [payments, setPayments] = useState([]);
+  const [leases, setLeases] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(() => {
+    const d = methodToDefaults("cash");
+    return {
+      lease_id: "",
+      amount: 1500,
+      payment_date: isoToday(),
+      method: "cash",
+      channel: d.channel,
+      processor: d.processor,
+      external_reference: "",
+      payer_handle: "",
+      account_last4: "",
+      fee: 0,
+      currency: "USD",
+      status: "completed",
+      notes: "",
+    };
+  });
+
+  async function refreshAll() {
+    setLoading(true);
+    setErr("");
+    try {
+      const [p, l, u] = await Promise.all([
+        api.get("/payments"),
+        api.get("/leases"),
+        api.get("/units"),
+      ]);
+      setPayments(p.data || []);
+      setLeases(l.data || []);
+      setUnits(u.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshAll();
+  }, []);
+
+  const unitById = useMemo(() => {
+    const map = new Map();
+    (units || []).forEach((u) => map.set(u.id, u));
+    return map;
+  }, [units]);
+
+  const tenantById = useMemo(() => {
+    // tenants not loaded on this page today; keep placeholder for future.
+    return new Map();
+  }, []);
+
+  const leaseOptions = useMemo(() => {
+    return (leases || []).map((l) => {
+      const unit = unitById.get(l.unit_id);
+      const unitLabel = unit?.label ? ` • ${unit.label}` : "";
+      const rent = Number(l.monthly_rent || 0);
+      const rentStr = rent ? ` • $${rent.toFixed(0)}` : "";
+      const stateStr = l.state ? ` • ${l.state}` : "";
+      return {
+        id: l.id,
+        label: `Lease ${l.id}${unitLabel}${rentStr}${stateStr}`,
+      };
+    });
+  }, [leases, unitById]);
+
+  function openCreate() {
+    const firstLease = leaseOptions[0]?.id ?? "";
+    const d = methodToDefaults("cash");
+    setForm({
+      lease_id: firstLease,
+      amount: 1500,
+      payment_date: isoToday(),
+      method: "cash",
+      channel: d.channel,
+      processor: d.processor,
+      external_reference: "",
+      payer_handle: "",
+      account_last4: "",
+      fee: 0,
+      currency: "USD",
+      status: "completed",
+      notes: "",
+    });
+    setOpen(true);
+  }
+
+  function onChange(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  async function createPayment() {
+    setErr("");
+    try {
+      if (!form.lease_id) {
+        setErr("Pick a lease first.");
+        return;
+      }
+
+      const payload = {
+        lease_id: Number(form.lease_id),
+        amount: Number(form.amount || 0),
+        payment_date: form.payment_date || isoToday(),
+        method: (form.method || "cash").toLowerCase(),
+        // backend will derive channel/processor, but we send anyway
+        channel: (form.channel || deriveChannel(form.method)).toLowerCase(),
+        processor: (form.processor || "none").toLowerCase(),
+        external_reference: form.external_reference?.trim() ? form.external_reference.trim() : null,
+        payer_handle: form.payer_handle?.trim() ? form.payer_handle.trim() : null,
+        account_last4: form.account_last4?.trim() ? form.account_last4.trim() : null,
+        fee: Number(form.fee || 0),
+        currency: (form.currency || "USD").toUpperCase(),
+        status: (form.status || "completed").toLowerCase(),
+        notes: form.notes?.trim() ? form.notes.trim() : null,
+      };
+
+      await api.post("/payments", payload);
+      setOpen(false);
+      await refreshAll();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Create failed");
+    }
+  }
+
+  const selectedLease = useMemo(() => {
+    const id = Number(form.lease_id || 0);
+    return (leases || []).find((l) => l.id === id) || null;
+  }, [form.lease_id, leases]);
+
+  const selectedUnit = useMemo(() => {
+    if (!selectedLease) return null;
+    return unitById.get(selectedLease.unit_id) || null;
+  }, [selectedLease, unitById]);
+
+  const showHandle = needsHandle(form.method);
+  const showLast4 = needsLast4(form.method);
+  const showRef = needsExternalRef(form.method);
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Payments</div>
+          <div style={styles.sub}>
+            Record rent payments across cash, bank, card, and payment apps. Payments attach to a lease.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.btn} onClick={refreshAll} disabled={loading}>
+            Refresh
+          </button>
+          <button style={styles.btnPrimary} onClick={openCreate}>
+            Record Payment
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={styles.alert}>{String(err)}</div> : null}
+
+      <div style={styles.card}>
+        <div style={styles.cardHeader}>Recent Payments</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Date</th>
+                <th>Lease</th>
+                <th>Amount</th>
+                <th>Method</th>
+                <th>Channel</th>
+                <th>Status</th>
+                <th>Ref</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(payments || []).map((p) => {
+                const lease = (leases || []).find((l) => l.id === p.lease_id);
+                const unit = lease ? unitById.get(lease.unit_id) : null;
+                return (
+                  <tr key={p.id}>
+                    <td>{p.id}</td>
+                    <td>{p.payment_date}</td>
+                    <td>
+                      {p.lease_id}
+                      {unit ? (
+                        <div style={{ fontSize: 12, color: "#475569" }}>
+                          {unit.label} • unit #{unit.id}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>${Number(p.amount || 0).toFixed(2)}</td>
+                    <td>{p.method}</td>
+                    <td>{p.channel}</td>
+                    <td>{p.status}</td>
+                    <td style={{ fontSize: 12, color: "#475569" }}>{p.external_reference || ""}</td>
+                    <td style={{ fontSize: 12, color: "#475569" }}>{p.notes || ""}</td>
+                  </tr>
+                );
+              })}
+              {!payments || payments.length === 0 ? (
+                <tr>
+                  <td colSpan={9} style={{ padding: 16, color: "#475569" }}>
+                    No payments yet.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <Modal title="Record Payment" open={open} onClose={() => setOpen(false)}>
+        <div style={styles.modalMetaRow}>
+          <div style={styles.pill}>
+            {selectedLease ? (
+              <>
+                <strong>Lease {selectedLease.id}</strong>
+                {selectedUnit?.label ? <span style={{ marginLeft: 8 }}>{selectedUnit.label}</span> : null}
+              </>
+            ) : (
+              <span>Select a lease</span>
+            )}
+          </div>
+          <div style={styles.pillMuted}>Tip: method auto-sets channel/processor.</div>
+        </div>
+
+        <div style={styles.grid2}>
+          <div>
+            <label style={styles.label}>Lease</label>
+            <select
+              style={styles.input}
+              value={form.lease_id}
+              onChange={(e) => onChange("lease_id", e.target.value)}
+              >
+              <option value="">— Select —</option>
+              {leaseOptions.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label style={styles.label}>Payment Date</label>
+            <input
+              type="date"
+              style={styles.input}
+              value={form.payment_date}
+              onChange={(e) => onChange("payment_date", e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label style={styles.label}>Amount</label>
+            <input
+              type="number"
+              style={styles.input}
+              value={form.amount}
+              onChange={(e) => onChange("amount", e.target.value)}
+              step="0.01"
+            />
+          </div>
+
+          <div>
+            <label style={styles.label}>Fee (optional)</label>
+            <input
+              type="number"
+              style={styles.input}
+              value={form.fee}
+              onChange={(e) => onChange("fee", e.target.value)}
+              step="0.01"
+            />
+          </div>
+
+          <div>
+            <label style={styles.label}>Method</label>
+            <select>
+              style={styles.input}
+              value={form.method}
+              onChange={(e) => {
+                const m = e.target.value;
+                const d = methodToDefaults(m);
+                setForm((f) => ({ ...f, method: m, channel: d.channel, processor: d.processor }));
+              }}
+              {METHOD_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label style={styles.label}>Channel</label>
+            <select style={styles.input} value={form.channel} onChange={(e) => onChange("channel", e.target.value)}>
+              <option value="cash">cash</option>
+              <option value="check">check</option>
+              <option value="bank">bank</option>
+              <option value="card">card</option>
+              <option value="p2p">p2p</option>
+              <option value="processor">processor</option>
+              <option value="other">other</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={styles.label}>Processor</label>
+            <select style={styles.input} value={form.processor} onChange={(e) => onChange("processor", e.target.value)}>
+              <option value="none">none</option>
+              <option value="manual">manual</option>
+              <option value="stripe">stripe</option>
+              <option value="square">square</option>
+              <option value="other">other</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={styles.label}>Status</label>
+            <select style={styles.input} value={form.status} onChange={(e) => onChange("status", e.target.value)}>
+              <option value="completed">completed</option>
+              <option value="pending">pending</option>
+              <option value="failed">failed</option>
+              <option value="refunded">refunded</option>
+              <option value="reversed">reversed</option>
+            </select>
+          </div>
+
+          {showHandle ? (
+            <div>
+              <label style={styles.label}>Payer handle (optional)</label>
+              <input
+                style={styles.input}
+                value={form.payer_handle}
+                onChange={(e) => onChange("payer_handle", e.target.value)}
+                placeholder="@venmo / $cashapp / zelle email/phone"
+              />
+            </div>
+          ) : null}
+
+          {showLast4 ? (
+            <div>
+              <label style={styles.label}>Card last 4 (optional)</label>
+              <input
+                style={styles.input}
+                value={form.account_last4}
+                onChange={(e) => onChange("account_last4", e.target.value)}
+                placeholder="1234"
+                maxLength={4}
+              />
+            </div>
+          ) : null}
+
+          {showRef ? (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label style={styles.label}>External reference (optional)</label>
+              <input
+                style={styles.input}
+                value={form.external_reference}
+                onChange={(e) => onChange("external_reference", e.target.value)}
+                placeholder="bank confirmation #, receipt id, processor txn id, etc."
+              />
+            </div>
+          ) : null}
+
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={styles.label}>Notes (optional)</label>
+            <textarea
+              style={{ ...styles.input, minHeight: 80, resize: "vertical" }}
+              value={form.notes}
+              onChange={(e) => onChange("notes", e.target.value)}
+              placeholder="e.g., Jan rent, partial payment, late fee included, etc."
+            />
+          </div>
+
+          <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+            <button style={styles.btn} onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+            <button style={styles.btnPrimary} onClick={createPayment}>
+              Save Payment
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+const styles = {
+  page: {
+    padding: 18,
+    maxWidth: 1200,
+    margin: "0 auto",
+  },
+  headerRow: {
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 12,
+  },
+  h1: { fontSize: 26, fontWeight: 900, color: "#0f172a" },
+  sub: { marginTop: 4, color: "#475569" },
+
+  alert: {
+    background: "#fff7ed",
+    border: "1px solid #fed7aa",
+    color: "#7c2d12",
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 12,
+    whiteSpace: "pre-wrap",
+  },
+
+  card: {
+    background: "white",
+    border: "1px solid #e2e8f0",
+    borderRadius: 14,
+    boxShadow: "0 1px 10px rgba(2,6,23,0.06)",
+    overflow: "hidden",
+  },
+  cardHeader: {
+    padding: "12px 14px",
+    fontWeight: 900,
+    borderBottom: "1px solid #e2e8f0",
+    color: "#0f172a",
+  },
+
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+    fontSize: 14,
+  },
+
+  btn: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid #cbd5e1",
+    background: "white",
+    cursor: "pointer",
+    fontWeight: 700,
+    color: "#0f172a",
+  },
+  btnPrimary: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid #0ea5e9",
+    background: "#0ea5e9",
+    color: "white",
+    cursor: "pointer",
+    fontWeight: 800,
+  },
+  btnGhost: {
+    border: "none",
+    background: "transparent",
+    cursor: "pointer",
+    fontSize: 18,
+    fontWeight: 900,
+    color: "#334155",
+  },
+
+  overlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(2,6,23,0.55)",
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "center",
+    padding: 18,
+    zIndex: 50,
+  },
+  modal: {
+    width: "min(980px, 100%)",
+    maxHeight: "85vh",
+    background: "white",
+    borderRadius: 16,
+    border: "1px solid #e2e8f0",
+    boxShadow: "0 20px 60px rgba(2,6,23,0.35)",
+    overflow: "hidden",
+  },
+  modalHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    padding: "12px 14px",
+    borderBottom: "1px solid #e2e8f0",
+    background: "#f8fafc",
+    color: "#0f172a",
+  },
+  modalBody: {
+    padding: 14,
+    overflow: "auto",
+  },
+
+  modalMetaRow: {
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    marginBottom: 12,
+  },
+  pill: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid #cbd5e1",
+    background: "white",
+    color: "#0f172a",
+    fontSize: 13,
+  },
+  pillMuted: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px dashed #cbd5e1",
+    background: "#f8fafc",
+    color: "#475569",
+    fontSize: 13,
+  },
+
+  grid2: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 12,
+  },
+  label: { display: "block", fontSize: 12, fontWeight: 800, color: "#334155", marginBottom: 6 },
+  input: {
+    width: "100%",
+    padding: "10px 10px",
+    borderRadius: 12,
+    border: "1px solid #cbd5e1",
+    outline: "none",
+    background: "white",
+    color: "#0f172a",
+  },
+};
+
+
+
+
+
+
+

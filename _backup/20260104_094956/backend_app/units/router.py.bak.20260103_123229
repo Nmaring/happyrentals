@@ -1,0 +1,187 @@
+﻿# backend/app/units/router.py
+from typing import List, Optional, Dict, Any
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import MetaData, Table, select, insert, update, delete
+from sqlalchemy.orm import Session
+
+from app.units import schemas
+
+
+# --- DB imports (robust) ---
+try:
+    from app.db import get_db, engine  # type: ignore
+except Exception:
+    from app.db import get_db  # type: ignore
+    try:
+        from app.db import get_engine  # type: ignore
+        engine = get_engine()
+    except Exception as e:
+        raise RuntimeError("Could not import DB engine from app.db") from e
+
+
+router = APIRouter(prefix="/units", tags=["units"])
+
+
+LABEL_CANDIDATES = [
+    "label",
+    "unit_label",
+    "name",
+    "unit_name",
+    "unit_number",
+    "number",
+    "unit",
+    "apt",
+    "apartment",
+]
+
+
+PROPERTY_ID_CANDIDATES = ["property_id", "propertyId", "property"]
+
+
+def _reflect_units_table() -> Table:
+    md = MetaData()
+    return Table("units", md, autoload_with=engine)
+
+
+def _pk_col(t: Table):
+    if t.primary_key and len(t.primary_key.columns) > 0:
+        return list(t.primary_key.columns)[0]
+    for name in ("id", "unit_id", "unitId", "pk"):
+        if name in t.c:
+            return t.c[name]
+    cols = list(t.c)
+    if not cols:
+        raise RuntimeError("Units table has no columns (reflection failed).")
+    return cols[0]
+
+
+def _pick_col(t: Table, candidates: list[str]) -> Optional[str]:
+    for c in candidates:
+        if c in t.c:
+            return c
+    return None
+
+
+def _row_to_unit_out(t: Table, row) -> Dict[str, Any]:
+    m = dict(row._mapping)
+    pk = _pk_col(t).name
+
+    unit_id = m.get("id", m.get(pk))
+    label_col = _pick_col(t, LABEL_CANDIDATES)
+    label_val = m.get(label_col) if label_col else None
+
+    # If label missing, derive something stable
+    if not label_val or str(label_val).strip() == "":
+        label_val = f"Unit {unit_id}"
+
+    prop_col = _pick_col(t, PROPERTY_ID_CANDIDATES)
+    prop_val = m.get(prop_col) if prop_col else None
+
+    def get_any(*names):
+        for n in names:
+            if n in m:
+                return m.get(n)
+        return None
+
+    return {
+        "id": int(unit_id) if unit_id is not None else 0,
+        "property_id": int(prop_val) if prop_val is not None else None,
+        "label": str(label_val),
+        "bedrooms": get_any("bedrooms"),
+        "bathrooms": get_any("bathrooms"),
+        "sqft": get_any("sqft"),
+        "rent": get_any("rent"),
+        "status": get_any("status"),
+        "notes": get_any("notes"),
+    }
+
+
+def _payload_to_db_values(t: Table, payload_dict: Dict[str, Any]) -> Dict[str, Any]:
+    values: Dict[str, Any] = {}
+
+    # property_id mapping
+    prop_col = _pick_col(t, PROPERTY_ID_CANDIDATES)
+    if prop_col and payload_dict.get("property_id") is not None:
+        values[prop_col] = payload_dict["property_id"]
+
+    # label mapping
+    label_col = _pick_col(t, LABEL_CANDIDATES)
+    if label_col and payload_dict.get("label") is not None:
+        values[label_col] = payload_dict["label"]
+
+    # passthrough common fields if they exist
+    for k in ("bedrooms", "bathrooms", "sqft", "rent", "status", "notes"):
+        if k in payload_dict and k in t.c:
+            values[k] = payload_dict[k]
+
+    # only keep real columns
+    values = {k: v for k, v in values.items() if k in t.c}
+    return values
+
+
+@router.get("", response_model=List[schemas.UnitOut])
+def list_units(property_id: Optional[int] = None, db: Session = Depends(get_db)):
+    t = _reflect_units_table()
+
+    stmt = select(*t.c)  # IMPORTANT: always select real columns
+    prop_col = _pick_col(t, PROPERTY_ID_CANDIDATES)
+    if property_id is not None and prop_col:
+        stmt = stmt.where(t.c[prop_col] == property_id)
+
+    stmt = stmt.order_by(_pk_col(t).desc())
+
+    rows = db.execute(stmt).fetchall()
+    return [_row_to_unit_out(t, r) for r in rows]
+
+
+@router.post("", response_model=schemas.UnitOut)
+def create_unit(payload: schemas.UnitCreate, db: Session = Depends(get_db)):
+    t = _reflect_units_table()
+    data = payload.model_dump()
+    values = _payload_to_db_values(t, data)
+
+    res = db.execute(insert(t).values(**values))
+    db.commit()
+
+    pk = _pk_col(t)
+    new_id = res.inserted_primary_key[0] if res.inserted_primary_key else None
+
+    if new_id is None:
+        row = db.execute(select(*t.c).order_by(pk.desc()).limit(1)).fetchone()
+    else:
+        row = db.execute(select(*t.c).where(pk == new_id)).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to read created unit")
+    return _row_to_unit_out(t, row)
+
+
+@router.put("/{unit_id}", response_model=schemas.UnitOut)
+def update_unit(unit_id: int, payload: schemas.UnitUpdate, db: Session = Depends(get_db)):
+    t = _reflect_units_table()
+    pk = _pk_col(t)
+
+    patch = payload.model_dump(exclude_unset=True)
+    values = _payload_to_db_values(t, patch)
+
+    if values:
+        db.execute(update(t).where(pk == unit_id).values(**values))
+        db.commit()
+
+    row = db.execute(select(*t.c).where(pk == unit_id)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    return _row_to_unit_out(t, row)
+
+
+@router.delete("/{unit_id}")
+def delete_unit(unit_id: int, db: Session = Depends(get_db)):
+    t = _reflect_units_table()
+    pk = _pk_col(t)
+
+    res = db.execute(delete(t).where(pk == unit_id))
+    db.commit()
+    if res.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    return {"ok": True}

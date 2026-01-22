@@ -1,0 +1,38 @@
+﻿# backend/app/leases/schemas.py
+from typing import Optional
+from pydantic import BaseModel
+
+
+class LeaseBase(BaseModel):
+    tenant_id: Optional[int] = None
+    unit_id: Optional[int] = None
+    start_date: Optional[str] = None   # allow null; router will validate
+    end_date: Optional[str] = None
+    monthly_rent: Optional[float] = None
+    status: Optional[str] = "active"
+    notes: Optional[str] = None
+
+
+class LeaseCreate(LeaseBase):
+    pass
+
+
+class LeaseUpdate(BaseModel):
+    tenant_id: Optional[int] = None
+    unit_id: Optional[int] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    monthly_rent: Optional[float] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class LeaseOut(BaseModel):
+    id: int
+    tenant_id: int
+    unit_id: int
+    start_date: str
+    end_date: Optional[str] = None
+    monthly_rent: float
+    status: str = "active"
+    notes: Optional[str] = None

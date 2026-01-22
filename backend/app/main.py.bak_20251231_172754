@@ -1,0 +1,38 @@
+# backend/app/main.py
+import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# Ensure the Property model is imported so SQLAlchemy "knows" about it
+# (important if you use Base.metadata.create_all somewhere)
+from app.properties import models as _properties_models  # noqa: F401
+from app.properties.router import router as properties_router
+
+
+app = FastAPI(title="HappyRentals API")
+
+# CORS (adjust origins as needed)
+frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[frontend_origin, "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- NEW ROUTER ---
+app.include_router(properties_router)
+
+# --- KEEP/RESTORE YOUR EXISTING ROUTERS HERE ---
+# Example:
+# from app.api.routes.units import router as units_router
+# app.include_router(units_router)
+#
+# from app.api.routes.tenants import router as tenants_router
+# app.include_router(tenants_router)
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}

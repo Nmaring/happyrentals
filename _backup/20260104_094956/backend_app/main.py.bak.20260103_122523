@@ -1,0 +1,35 @@
+﻿# backend/app/main.py
+import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+import app.properties.router as properties_routes
+import app.units.router as units_routes
+import app.tenants.router as tenants_routes
+import app.leases.router as leases_routes
+import app.payments.router as payments_routes
+import app.debug.router as debug_routes
+
+app = FastAPI(title="HappyRentals API")
+
+frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[frontend_origin, "http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Routers
+app.include_router(properties_routes.router)
+app.include_router(units_routes.router)
+app.include_router(tenants_routes.router)
+app.include_router(leases_routes.router)
+app.include_router(payments_routes.router)
+app.include_router(debug_routes.router)
+
+@app.get("/health")
+def health():
+    return {"ok": True}

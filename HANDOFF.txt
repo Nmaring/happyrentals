@@ -1,0 +1,38 @@
+﻿HappyRentals – Handoff Snapshot (keep this for next ChatGPT window)
+
+PROJECT PATHS
+- Backend:  C:\HappyRentals\backend
+- Frontend: C:\HappyRentals\frontend
+- API Base: http://127.0.0.1:8000
+- UI Base:  http://127.0.0.1:5173
+
+CURRENT STATUS (as of now)
+- /units works
+- /leases works
+- /payments works
+- Payments older rows had null tenant_id/unit_id; backfill script created:
+  C:\HappyRentals\backend\scripts\migrate_backfill_payments.py
+- One payment row had method=venmo but channel=manual; script normalizes channel.
+- Frontend PaymentsPage modal scrolling fixed.
+
+KNOWN GOTCHAS WE HIT
+- Port 5173 sometimes already in use
+- Port 8000 binding conflicts; use netstat + taskkill by PID (don’t use 47268 variable name)
+- DB schema drift required ALTER TABLE migrations (created_at, channel, processor, external_reference)
+- LeaseOut / PaymentOut Pydantic types must match DB outputs (dates/created_at formatting)
+- If backend reload breaks: check for missing schema classes (ex: PaymentUpdate) or syntax errors in routers.
+
+NEXT TODO
+- Lease builder options (state rules, lease types: month-to-month, fixed term, open ended)
+- Payments: add “processor” choices + better mapping; optionally add reconciliation / balances
+- Units: ensure label always present in UI (fallback if missing)
+
+HOW TO START
+Backend:
+  cd C:\HappyRentals\backend
+  .\.venv\Scripts\python.exe=".\.venv\Scripts\python.exe"; if(!(Test-Path .\.venv\Scripts\python.exe)){ .\.venv\Scripts\python.exe="python" }
+  & .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+Frontend:
+  cd C:\HappyRentals\frontend
+  npm run dev -- --host 127.0.0.1 --port 5173 --strictPort

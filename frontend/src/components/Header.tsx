@@ -1,0 +1,113 @@
+﻿import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../providers/AuthProvider";
+
+const API_URL = (import.meta as any).env?.VITE_API_URL || "http://127.0.0.1:8000/api";
+
+export default function Header() {
+  const nav = useNavigate();
+  const { userEmail, logout } = useAuth();
+  const [apiOk, setApiOk] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function ping() {
+      try {
+        const res = await fetch(`${API_URL}/health`, { cache: "no-store" as RequestCache });
+        if (!cancelled) setApiOk(res.ok);
+      } catch {
+        if (!cancelled) setApiOk(false);
+      }
+    }
+
+    ping();
+    const t = setInterval(ping, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
+
+  function onLogout() {
+    logout();
+    nav("/login");
+  }
+
+  const dotColor =
+    apiOk === null ? "rgba(255,255,255,0.45)" : apiOk ? "#2dd4bf" : "#ff4d6d";
+
+  return (
+    <div
+      style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 10,
+        backdropFilter: "blur(10px)",
+        background: "rgba(10, 16, 30, 0.75)",
+        borderBottom: "1px solid rgba(255,255,255,0.10)",
+      }}
+      <div
+        style={{
+          maxWidth: 1200,
+          margin: "0 auto",
+          padding: "12px 18px",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+        }}
+        <div style={{ fontWeight: 800, letterSpacing: 0.2 }}>
+          HappyRentals
+        </div>
+
+        <button
+          onClick={() => nav("/properties")}
+          style={{
+            marginLeft: 8,
+            border: "1px solid rgba(255,255,255,0.14)",
+            background: "rgba(255,255,255,0.06)",
+            color: "rgba(255,255,255,0.92)",
+            padding: "8px 10px",
+            borderRadius: 10,
+            cursor: "pointer",
+          }}
+          Properties
+        </button>
+
+        <div style={{ flex: 1 }} />
+
+        <div
+          title={apiOk === null ? "Checking APIâ€¦" : apiOk ? "API OK" : "API down"}
+          style={{
+            width: 10,
+            height: 10,
+            borderRadius: 999,
+            background: dotColor,
+            boxShadow: `0 0 0 3px rgba(255,255,255,0.06)`,
+          }}
+        />
+
+        <div style={{ fontSize: 12, opacity: 0.85 }}>
+          {userEmail || "â€”"}
+        </div>
+
+        <button
+          onClick={onLogout}
+          style={{
+            border: "1px solid rgba(255,255,255,0.14)",
+            background: "rgba(255,255,255,0.06)",
+            color: "rgba(255,255,255,0.92)",
+            padding: "8px 10px",
+            borderRadius: 10,
+            cursor: "pointer",
+          }}
+          Logout
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+
+

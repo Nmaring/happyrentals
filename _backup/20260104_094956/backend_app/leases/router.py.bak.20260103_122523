@@ -1,0 +1,267 @@
+﻿# backend/app/leases/router.py
+from typing import List, Optional, Dict, Any
+from datetime import date, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import (
+    MetaData,
+    Table,
+    Column,
+    Integer,
+    String,
+    Float,
+    Text,
+    select,
+    insert,
+    update,
+    delete,
+)
+from sqlalchemy.orm import Session
+
+from app.leases import schemas
+
+# --- DB imports (robust) ---
+try:
+    from app.db import get_db, engine  # type: ignore
+except Exception:
+    from app.db import get_db  # type: ignore
+    try:
+        from app.db import get_engine  # type: ignore
+        engine = get_engine()
+    except Exception as e:
+        raise RuntimeError("Could not import DB engine from app.db") from e
+
+
+router = APIRouter(prefix="/leases", tags=["leases"])
+
+META = MetaData()
+_LEASES: Table | None = None
+
+MAP = {
+    "id": ["id", "lease_id", "leaseId"],
+    "tenant_id": ["tenant_id", "tenantId", "tenant"],
+    "unit_id": ["unit_id", "unitId", "unit"],
+    "start_date": ["start_date", "startDate", "start"],
+    "end_date": ["end_date", "endDate", "end"],
+    "monthly_rent": ["monthly_rent", "monthlyRent", "rent"],
+    "status": ["status", "state"],
+    "notes": ["notes", "note"],
+}
+
+
+def _pick_col(t: Table, candidates: list[str]) -> Optional[str]:
+    for c in candidates:
+        if c in t.c:
+            return c
+    return None
+
+
+def _pk_col(t: Table) -> str:
+    c = _pick_col(t, MAP["id"])
+    if c:
+        return c
+    if t.primary_key and len(t.primary_key.columns) > 0:
+        return list(t.primary_key.columns)[0].name
+    cols = list(t.c)
+    if not cols:
+        raise RuntimeError("Leases table has no columns (reflection failed).")
+    return cols[0].name
+
+
+def _ensure_table(db: Session) -> Table:
+    global _LEASES
+    if _LEASES is not None:
+        return _LEASES
+
+    bind = db.get_bind()
+    try:
+        t = Table("leases", META, autoload_with=bind)
+        _LEASES = t
+        return t
+    except Exception:
+        t = Table(
+            "leases",
+            META,
+            Column("id", Integer, primary_key=True),
+            Column("tenant_id", Integer, nullable=False),
+            Column("unit_id", Integer, nullable=False),
+            Column("start_date", String(10), nullable=False),
+            Column("end_date", String(10), nullable=True),
+            Column("monthly_rent", Float, nullable=False),
+            Column("status", String(20), nullable=False, default="active"),
+            Column("notes", Text, nullable=True),
+        )
+        META.create_all(bind=bind, tables=[t])
+        _LEASES = t
+        return t
+
+
+def _row_to_out(t: Table, row) -> Dict[str, Any]:
+    m = dict(row._mapping)
+
+    pk = _pk_col(t)
+    lease_id = m.get("id", m.get(pk))
+
+    def read(key: str):
+        col = _pick_col(t, MAP[key])
+        return m.get(col) if col else None
+
+    return {
+        "id": int(lease_id) if lease_id is not None else 0,
+        "tenant_id": int(read("tenant_id")),
+        "unit_id": int(read("unit_id")),
+        "start_date": str(read("start_date")),
+        "end_date": read("end_date"),
+        "monthly_rent": float(read("monthly_rent")),
+        "status": str(read("status") or "active"),
+        "notes": read("notes"),
+    }
+
+
+def _payload_to_values(t: Table, data: Dict[str, Any]) -> Dict[str, Any]:
+    values: Dict[str, Any] = {}
+    for key in ("tenant_id", "unit_id", "start_date", "end_date", "monthly_rent", "status", "notes"):
+        col = _pick_col(t, MAP[key])
+        if col and (key in data) and (data[key] is not None):
+            values[col] = data[key]
+    status_col = _pick_col(t, MAP["status"])
+    if status_col and status_col not in values:
+        values[status_col] = "active"
+    return values
+
+
+def _iso_today() -> str:
+    return date.today().isoformat()
+
+
+def _coerce_date_or_default(val: Optional[str], default_iso: str) -> str:
+    if val is None:
+        return default_iso
+    s = str(val).strip()
+    return s if s else default_iso
+
+
+def _add_365(iso_str: str) -> str:
+    # assumes YYYY-MM-DD
+    try:
+        y, m, d = iso_str.split("-")
+        dt = date(int(y), int(m), int(d))
+        return (dt + timedelta(days=365)).isoformat()
+    except Exception:
+        # fallback: if weird date gets passed, just use today+365
+        return (date.today() + timedelta(days=365)).isoformat()
+
+
+@router.get("", response_model=List[schemas.LeaseOut])
+def list_leases(
+    tenant_id: Optional[int] = None,
+    unit_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    t = _ensure_table(db)
+    stmt = select(*t.c)
+
+    tenant_col = _pick_col(t, MAP["tenant_id"])
+    unit_col = _pick_col(t, MAP["unit_id"])
+
+    if tenant_id is not None and tenant_col:
+        stmt = stmt.where(t.c[tenant_col] == tenant_id)
+    if unit_id is not None and unit_col:
+        stmt = stmt.where(t.c[unit_col] == unit_id)
+
+    pk = _pk_col(t)
+    stmt = stmt.order_by(t.c[pk].desc())
+
+    rows = db.execute(stmt).fetchall()
+    return [_row_to_out(t, r) for r in rows]
+
+
+@router.post("", response_model=schemas.LeaseOut)
+def create_lease(payload: schemas.LeaseCreate, db: Session = Depends(get_db)):
+    t = _ensure_table(db)
+    data = payload.model_dump()
+
+    missing = []
+    if data.get("tenant_id") is None:
+        missing.append("tenant_id")
+    if data.get("unit_id") is None:
+        missing.append("unit_id")
+    if data.get("monthly_rent") is None:
+        missing.append("monthly_rent")
+
+    if missing:
+        raise HTTPException(status_code=400, detail={"error": "missing required fields", "missing": missing})
+
+    # ✅ Defaults so UI can’t break this
+    start_default = _iso_today()
+    data["start_date"] = _coerce_date_or_default(data.get("start_date"), start_default)
+
+    end_default = _add_365(data["start_date"])
+    data["end_date"] = _coerce_date_or_default(data.get("end_date"), end_default)
+
+    values = _payload_to_values(t, data)
+
+    try:
+        res = db.execute(insert(t).values(**values))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail={"error": "Lease insert failed", "exception": str(e), "values": values})
+
+    pk = _pk_col(t)
+    new_id = res.inserted_primary_key[0] if res.inserted_primary_key else None
+
+    if new_id is None:
+        row = db.execute(select(*t.c).order_by(t.c[pk].desc()).limit(1)).fetchone()
+    else:
+        row = db.execute(select(*t.c).where(t.c[pk] == new_id)).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to read created lease")
+    return _row_to_out(t, row)
+
+
+@router.put("/{lease_id}", response_model=schemas.LeaseOut)
+def update_lease(lease_id: int, payload: schemas.LeaseUpdate, db: Session = Depends(get_db)):
+    t = _ensure_table(db)
+    pk = _pk_col(t)
+
+    patch = payload.model_dump(exclude_unset=True)
+
+    # allow patching start/end; if provided blank -> default to today / start+365
+    if "start_date" in patch:
+        patch["start_date"] = _coerce_date_or_default(patch.get("start_date"), _iso_today())
+    if "end_date" in patch:
+        if "start_date" in patch and patch["start_date"]:
+            patch["end_date"] = _coerce_date_or_default(patch.get("end_date"), _add_365(patch["start_date"]))
+        else:
+            patch["end_date"] = _coerce_date_or_default(patch.get("end_date"), _add_365(_iso_today()))
+
+    values = _payload_to_values(t, patch)
+
+    if values:
+        try:
+            res = db.execute(update(t).where(t.c[pk] == lease_id).values(**values))
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail={"error": "Lease update failed", "exception": str(e), "values": values})
+        if res.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Lease not found")
+
+    row = db.execute(select(*t.c).where(t.c[pk] == lease_id)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Lease not found")
+    return _row_to_out(t, row)
+
+
+@router.delete("/{lease_id}")
+def delete_lease(lease_id: int, db: Session = Depends(get_db)):
+    t = _ensure_table(db)
+    pk = _pk_col(t)
+
+    res = db.execute(delete(t).where(t.c[pk] == lease_id))
+    db.commit()
+    if res.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Lease not found")
+    return {"ok": True}

@@ -1,0 +1,37 @@
+﻿# backend/app/payments/models.py
+from sqlalchemy import Table, Column, Integer, String, Date, Numeric, Text, DateTime
+from sqlalchemy.sql import func
+from app.db_compat import metadata, engine
+
+payments = Table(
+    "payments",
+    metadata,
+    Column("id", Integer, primary_key=True),
+
+    Column("lease_id", Integer, nullable=True),
+    Column("tenant_id", Integer, nullable=True),
+    Column("unit_id", Integer, nullable=True),
+
+    Column("amount", Numeric(12, 2), nullable=False, server_default="0"),
+    Column("payment_date", Date, nullable=False),
+
+    # cash, check, money_order, ach, card, venmo, cashapp, apple_pay, google_pay, zelle, paypal, other
+    Column("method", String(32), nullable=False, server_default="cash"),
+
+    # in_person, online, mail, lockbox, other
+    Column("channel", String(32), nullable=True),
+
+    # Stripe, PayPal, Venmo, Cash App, Zelle, Apple Pay (via processor), etc.
+    Column("processor", String(64), nullable=True),
+
+    # transaction id, confirmation code, memo, etc.
+    Column("external_reference", String(128), nullable=True),
+
+    Column("status", String(32), nullable=False, server_default="received"),  # received|pending|failed|refunded
+    Column("notes", Text, nullable=True),
+
+    Column("created_at", DateTime(timezone=False), server_default=func.now(), nullable=False),
+)
+
+def init_payments_tables():
+    metadata.create_all(bind=engine)

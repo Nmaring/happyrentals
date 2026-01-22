@@ -1,0 +1,54 @@
+﻿# backend/app/main.py
+import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+import app.properties.router as properties_routes
+import app.units.router as units_routes
+import app.tenants.router as tenants_routes
+import app.leases.router as leases_routes
+import app.payments.router as payments_routes
+import app.lease_builder.router as lease_builder_routes
+
+from app.units.models import init_units_tables
+from app.leases.models import init_leases_tables
+from app.payments.models import init_payments_tables
+
+app = FastAPI(title="HappyRentals API")
+
+frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[frontend_origin, "http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+def _startup_init():
+    # Force-create tables/columns even if APIRouter startup hooks don’t run
+    init_units_tables()
+    init_leases_tables()
+    init_payments_tables()
+
+app.include_router(properties_routes.router)
+app.include_router(units_routes.router)
+app.include_router(tenants_routes.router)
+app.include_router(leases_routes.router)
+app.include_router(payments_routes.router)
+app.include_router(lease_builder_routes.router)
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+@app.get("/debug/db")
+def debug_db():
+    from app.db_compat import engine
+    return {
+        "cwd": os.getcwd(),
+        "engine_url": str(engine.url),
+        "frontend_origin_env": os.getenv("FRONTEND_ORIGIN"),
+    }

@@ -1,0 +1,210 @@
+﻿from __future__ import annotations
+
+from datetime import date
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.db_compat import get_db
+
+
+router = APIRouter(prefix="/payments", tags=["payments"])
+
+
+# --- Try ORM first, fallback to Core table ---
+ORM_MODE = False
+Payment = None
+payments_table = None
+
+try:
+    from app.payments.models import Payment  # type: ignore
+    ORM_MODE = True
+except Exception:
+    ORM_MODE = False
+
+if not ORM_MODE:
+    try:
+        from sqlalchemy import select  # type: ignore
+        from app.payments.models import payments as payments_table  # type: ignore
+    except Exception as e:
+        payments_table = None
+
+
+class PaymentCreate(BaseModel):
+    lease_id: int
+    amount: float
+    payment_date: date | str
+    method: str = "cash"
+    channel: str = "manual"
+    processor: str = "none"
+    fee: float = 0.0
+    currency: str = "USD"
+    status: str = "completed"
+    notes: Optional[str] = None
+
+
+class PaymentOut(BaseModel):
+    id: int
+    lease_id: int
+    amount: float
+    payment_date: date
+    method: str
+    channel: str
+    processor: str
+    fee: float
+    currency: str
+    status: str
+    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+def _coerce_date(v: Any) -> date:
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        # Expect YYYY-MM-DD
+        return date.fromisoformat(v)
+    raise ValueError("payment_date must be a date or YYYY-MM-DD string")
+
+
+def _to_out(obj: Any) -> PaymentOut:
+    if ORM_MODE:
+        return PaymentOut.model_validate(obj)
+
+    # Core row
+    m = getattr(obj, "_mapping", obj)
+    return PaymentOut(
+        id=int(m["id"]),
+        lease_id=int(m["lease_id"]),
+        amount=float(m["amount"]),
+        payment_date=_coerce_date(m["payment_date"]),
+        method=str(m.get("method") or ""),
+        channel=str(m.get("channel") or ""),
+        processor=str(m.get("processor") or ""),
+        fee=float(m.get("fee") or 0.0),
+        currency=str(m.get("currency") or "USD"),
+        status=str(m.get("status") or "completed"),
+        notes=m.get("notes"),
+    )
+
+
+@router.get("", response_model=List[PaymentOut])
+@router.get("/", response_model=List[PaymentOut])
+def list_payments(db: Session = Depends(get_db)):
+    try:
+        if ORM_MODE:
+            rows = db.query(Payment).order_by(Payment.payment_date.desc(), Payment.id.desc()).all()  # type: ignore
+            return [_to_out(r) for r in rows]
+
+        if payments_table is None:
+            raise HTTPException(status_code=500, detail="Payments table/model not available")
+
+        from sqlalchemy import select  # type: ignore
+        rows = db.execute(select(payments_table).order_by(payments_table.c.payment_date.desc(), payments_table.c.id.desc())).all()  # type: ignore
+        return [_to_out(r) for r in rows]
+
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"list_payments failed: {type(e).__name__}: {e}")
+
+
+@router.post("", response_model=PaymentOut)
+@router.post("/", response_model=PaymentOut)
+def create_payment(payload: PaymentCreate, db: Session = Depends(get_db)):
+    try:
+        d: Dict[str, Any] = payload.model_dump()
+        d["payment_date"] = _coerce_date(d["payment_date"])
+
+        # normalize numeric fields
+        d["amount"] = float(d.get("amount") or 0.0)
+        d["fee"] = float(d.get("fee") or 0.0)
+
+        if ORM_MODE:
+            obj = Payment(**d)  # type: ignore
+            db.add(obj)
+            db.commit()
+            db.refresh(obj)
+            return _to_out(obj)
+
+        if payments_table is None:
+            raise HTTPException(status_code=500, detail="Payments table/model not available")
+
+        ins = payments_table.insert().values(**d)  # type: ignore
+        res = db.execute(ins)
+        db.commit()
+
+        new_id = None
+        try:
+            new_id = res.inserted_primary_key[0]
+        except Exception:
+            pass
+
+        if new_id is None:
+            # last resort: fetch latest row for that lease/date/amount
+            from sqlalchemy import select, and_  # type: ignore
+            row = db.execute(
+                select(payments_table)
+                .where(
+                    and_(
+                        payments_table.c.lease_id == d["lease_id"],
+                        payments_table.c.payment_date == d["payment_date"],
+                        payments_table.c.amount == d["amount"],
+                    )
+                )
+                .order_by(payments_table.c.id.desc())
+            ).first()
+        else:
+            from sqlalchemy import select  # type: ignore
+            row = db.execute(select(payments_table).where(payments_table.c.id == new_id)).first()  # type: ignore
+
+        if not row:
+            raise HTTPException(status_code=500, detail="Payment inserted but could not be reloaded")
+
+        return _to_out(row)
+
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"create_payment invalid input: {e}")
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"create_payment failed: {type(e).__name__}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"create_payment failed: {type(e).__name__}: {e}")
+
+
+@router.delete("/{payment_id}")
+def delete_payment(payment_id: int, db: Session = Depends(get_db)):
+    try:
+        if ORM_MODE:
+            obj = db.query(Payment).filter(Payment.id == payment_id).first()  # type: ignore
+            if not obj:
+                raise HTTPException(status_code=404, detail="Payment not found")
+            db.delete(obj)
+            db.commit()
+            return {"ok": True}
+
+        if payments_table is None:
+            raise HTTPException(status_code=500, detail="Payments table/model not available")
+
+        res = db.execute(payments_table.delete().where(payments_table.c.id == payment_id))  # type: ignore
+        db.commit()
+        if getattr(res, "rowcount", 0) == 0:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        return {"ok": True}
+
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"delete_payment failed: {type(e).__name__}: {e}")
+
+
+
+
+
+
+
+

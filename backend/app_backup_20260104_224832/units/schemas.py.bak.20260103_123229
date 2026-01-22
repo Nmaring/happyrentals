@@ -1,0 +1,26 @@
+﻿# backend/app/units/schemas.py
+from typing import Optional
+from pydantic import BaseModel
+
+
+class UnitBase(BaseModel):
+    property_id: Optional[int] = None
+    label: Optional[str] = None  # allow missing; router will derive if DB uses a different column name
+    bedrooms: Optional[int] = None
+    bathrooms: Optional[float] = None
+    sqft: Optional[int] = None
+    rent: Optional[float] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class UnitCreate(UnitBase):
+    pass
+
+
+class UnitUpdate(UnitBase):
+    pass
+
+
+class UnitOut(UnitBase):
+    id: int

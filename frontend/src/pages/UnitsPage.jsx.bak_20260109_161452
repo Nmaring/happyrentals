@@ -1,0 +1,316 @@
+﻿import React from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+function unwrapList(x) {
+  if (!x) return [];
+  if (Array.isArray(x)) return x;
+  if (x && Array.isArray(x.value)) return x.value; // { value: [...], Count: n }
+  if (x && Array.isArray(x.items)) return x.items;
+  if (x && Array.isArray(x.results)) return x.results;
+  return [];
+}
+
+function Modal({ open, title, onClose, children }) {
+  if (!open) return null;
+  return (
+    <div style={styles.overlay} onMouseDown={onClose}>
+      <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={{ fontWeight: 900 }}>{title}</div>
+          <button type="button" onClick={onClose} style={styles.btnGhost}>✕</button>
+        </div>
+        <div style={styles.modalBody}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+export default function UnitsPage() {
+  const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const initialPropertyId = searchParams.get("property_id") || "";
+
+  const [properties, setProperties] = React.useState([]);
+  const [units, setUnits] = React.useState([]);
+  const [propertyId, setPropertyId] = React.useState(initialPropertyId);
+
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+
+  const [open, setOpen] = React.useState(false);
+  const [form, setForm] = React.useState({
+    property_id: initialPropertyId || "",
+    label: "",
+    beds: "",
+    baths: "",
+    monthly_rent: "",
+    status: "vacant",
+    notes: "",
+  });
+
+  // keep URL query in sync with selected property
+  React.useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (propertyId) next.set("property_id", String(propertyId));
+    else next.delete("property_id");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyId]);
+
+  const unitsUrl = React.useMemo(() => {
+    return propertyId ? `${API}/units?property_id=${encodeURIComponent(propertyId)}` : `${API}/units`;
+  }, [propertyId]);
+
+  const propertyNameById = React.useMemo(() => {
+    const m = {};
+    (properties || []).forEach((p) => { m[String(p.id)] = p.name || `Property ${p.id}`; });
+    return m;
+  }, [properties]);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const pRes = await fetch(`${API}/properties`);
+      if (!pRes.ok) throw new Error(`GET /properties failed (${pRes.status})`);
+      const pJson = await pRes.json();
+      const pList = unwrapList(pJson);
+      setProperties(pList);
+
+      const uRes = await fetch(unitsUrl);
+      if (!uRes.ok) throw new Error(`GET /units failed (${uRes.status})`);
+      const uJson = await uRes.json();
+      setUnits(unwrapList(uJson));
+    } catch (e) {
+      setUnits([]);
+      setError(String(e?.message || e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  React.useEffect(() => { load(); }, [unitsUrl]);
+
+  function openCreate() {
+    setError("");
+    setForm((f) => ({
+      property_id: propertyId || f.property_id || "",
+      label: "",
+      beds: "",
+      baths: "",
+      monthly_rent: "",
+      status: "vacant",
+      notes: "",
+    }));
+    setOpen(true);
+  }
+
+  function onChange(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  async function createUnit(e) {
+    e.preventDefault();
+    setError("");
+
+    const payload = {
+      property_id: Number(form.property_id),
+      label: String(form.label || "").trim(),
+      beds: form.beds === "" ? null : Number(form.beds),
+      baths: form.baths === "" ? null : Number(form.baths),
+      monthly_rent: form.monthly_rent === "" ? null : Number(form.monthly_rent),
+      status: String(form.status || "vacant"),
+      notes: String(form.notes || ""),
+    };
+
+    if (!Number.isInteger(payload.property_id) || payload.property_id <= 0) {
+      setError("Select a property.");
+      return;
+    }
+    if (!payload.label) {
+      setError("Unit label is required.");
+      return;
+    }
+    if (payload.beds != null && !Number.isFinite(payload.beds)) {
+      setError("Beds must be a number.");
+      return;
+    }
+    if (payload.baths != null && !Number.isFinite(payload.baths)) {
+      setError("Baths must be a number.");
+      return;
+    }
+    if (payload.monthly_rent != null && !Number.isFinite(payload.monthly_rent)) {
+      setError("Monthly rent must be a number.");
+      return;
+    }
+
+    try {
+      const r = await fetch(`${API}/units`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(`POST /units failed (${r.status}): ${t}`);
+      }
+      setOpen(false);
+      await load();
+    } catch (e2) {
+      setError(String(e2?.message || e2));
+    }
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Units</div>
+          <div style={styles.sub}>Filter by property and jump to tenants/leases.</div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <select style={styles.select} value={propertyId} onChange={(e) => setPropertyId(e.target.value)}>
+            <option value="">All properties</option>
+            {(properties || []).map((p) => (
+              <option key={p.id} value={String(p.id)}>{p.name || `Property ${p.id}`}</option>
+            ))}
+          </select>
+          <button type="button" style={styles.btn} onClick={load}>Refresh</button>
+          <button type="button" style={styles.btnPrimary} onClick={openCreate}>+ New Unit</button>
+        </div>
+      </div>
+
+      {error ? <div style={styles.err}>{error}</div> : null}
+
+      <div style={styles.card}>
+        <div style={styles.tableHead}>
+          <div style={{ fontWeight: 800 }}>Unit</div>
+          <div style={{ fontWeight: 800 }}>Property</div>
+          <div style={{ fontWeight: 800 }}>Details</div>
+          <div style={{ fontWeight: 800, textAlign: "right" }}>Actions</div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>Loading…</div>
+        ) : units.length === 0 ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>No units found.</div>
+        ) : (
+          units.map((u) => {
+            const label = u.label || u.unit_number || u.name || `Unit ${u.id}`;
+            const pid = u.property_id != null ? String(u.property_id) : "";
+            const propName = pid ? (propertyNameById[pid] || `Property ${pid}`) : "—";
+
+            const details = [
+              (u.beds != null ? `${u.beds} bd` : null),
+              (u.baths != null ? `${u.baths} ba` : null),
+              (u.monthly_rent != null ? `$${Number(u.monthly_rent).toFixed(0)}/mo` : null),
+              (u.status ? String(u.status) : null),
+            ].filter(Boolean).join(" • ");
+
+            return (
+              <div key={u.id} style={styles.row}>
+                <div style={{ fontWeight: 750 }}>{label}</div>
+                <div style={{ opacity: 0.8 }}>{propName}</div>
+                <div style={{ opacity: 0.8 }}>{details || "—"}</div>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                  <button type="button" style={styles.btnGhost} onClick={() => nav(`/tenants?unit_id=${encodeURIComponent(String(u.id))}`)}>
+                    Tenants
+                  </button>
+                  <button type="button" style={styles.btnGhost} onClick={() => nav(`/leases?unit_id=${encodeURIComponent(String(u.id))}`)}>
+                    Leases
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <Modal open={open} title="Create Unit" onClose={() => setOpen(false)}>
+        <form onSubmit={createUnit} style={{ display: "grid", gap: 12 }}>
+          <label style={{ display: "grid", gap: 6 }}>
+            <div style={styles.label}>Property</div>
+            <select style={styles.input} value={form.property_id} onChange={(e) => onChange("property_id", e.target.value)}>
+              <option value="">Select…</option>
+              {(properties || []).map((p) => (
+                <option key={p.id} value={String(p.id)}>{p.name || `Property ${p.id}`}</option>
+              ))}
+            </select>
+          </label>
+
+          <div style={styles.grid2}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Unit label</div>
+              <input style={styles.input} value={form.label} onChange={(e) => onChange("label", e.target.value)} placeholder="e.g., Unit 1 / Apt A" />
+            </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Status</div>
+              <select style={styles.input} value={form.status} onChange={(e) => onChange("status", e.target.value)}>
+                <option value="vacant">vacant</option>
+                <option value="occupied">occupied</option>
+                <option value="offline">offline</option>
+              </select>
+            </label>
+          </div>
+
+          <div style={styles.grid2}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Beds</div>
+              <input type="number" step="1" style={styles.input} value={form.beds} onChange={(e) => onChange("beds", e.target.value)} />
+            </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Baths</div>
+              <input type="number" step="0.5" style={styles.input} value={form.baths} onChange={(e) => onChange("baths", e.target.value)} />
+            </label>
+          </div>
+
+          <label style={{ display: "grid", gap: 6 }}>
+            <div style={styles.label}>Monthly rent</div>
+            <input type="number" step="0.01" style={styles.input} value={form.monthly_rent} onChange={(e) => onChange("monthly_rent", e.target.value)} />
+          </label>
+
+          <label style={{ display: "grid", gap: 6 }}>
+            <div style={styles.label}>Notes</div>
+            <input style={styles.input} value={form.notes} onChange={(e) => onChange("notes", e.target.value)} />
+          </label>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <button type="button" style={styles.btn} onClick={() => setOpen(false)}>Cancel</button>
+            <button type="submit" style={styles.btnPrimary}>Create</button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: 18, display: "grid", gap: 14 },
+  headerRow: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 },
+  h1: { fontSize: 26, fontWeight: 900, letterSpacing: -0.3 },
+  sub: { color: "#475569", marginTop: 4 },
+
+  err: { background: "#fff1f2", border: "1px solid #fecdd3", color: "#9f1239", padding: 10, borderRadius: 12 },
+
+  card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden" },
+  tableHead: { display: "grid", gridTemplateColumns: "1.4fr 1.6fr 2fr 1.6fr", gap: 10, padding: 12, borderBottom: "1px solid #e5e7eb", background: "#fafafa" },
+  row: { display: "grid", gridTemplateColumns: "1.4fr 1.6fr 2fr 1.6fr", gap: 10, padding: 12, borderBottom: "1px solid #f1f5f9", alignItems: "center" },
+
+  btn: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  btnPrimary: { padding: "10px 12px", borderRadius: 12, border: "1px solid #1d4ed8", background: "#2563eb", color: "white", cursor: "pointer" },
+  btnGhost: { padding: "8px 10px", borderRadius: 10, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+
+  label: { fontSize: 12, fontWeight: 800, color: "#334155" },
+  input: { width: "100%", padding: 10, borderRadius: 12, border: "1px solid #e5e7eb", outline: "none" },
+  select: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", minWidth: 240 },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
+  modal: { width: "min(920px, 100%)", background: "white", borderRadius: 18, border: "1px solid #e5e7eb", overflow: "hidden" },
+  modalHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: 12, borderBottom: "1px solid #e5e7eb" },
+  modalBody: { padding: 12 },
+};

@@ -1,0 +1,34 @@
+﻿$ErrorActionPreference = "Stop"
+
+$ROOT = "C:\HappyRentals"
+$BACK = Join-Path $ROOT "backend"
+$FRONT = Join-Path $ROOT "frontend"
+
+# ---- Backend window ----
+Start-Process powershell -ArgumentList @(
+  "-NoExit",
+  "-Command",
+  @"
+cd '$BACK'
+`$PY = '.\.venv\Scripts\python.exe'; if(!(Test-Path `$PY)){ `$PY = 'python' }
+`$env:PYTHONPATH = (Get-Location).Path
+Write-Host 'Starting BACKEND on http://127.0.0.1:8000' -ForegroundColor Green
+& `$PY -m uvicorn app.main:app --app-dir . --host 127.0.0.1 --port 8000 --reload
+"@
+)
+
+# ---- Frontend window ----
+Start-Process powershell -ArgumentList @(
+  "-NoExit",
+  "-Command",
+  @"
+cd '$FRONT'
+Write-Host 'Starting FRONTEND on http://127.0.0.1:5173' -ForegroundColor Cyan
+npm run dev
+"@
+)
+
+# Optional: open browser after a short delay
+Start-Sleep -Seconds 2
+Start-Process "http://127.0.0.1:5173/"
+

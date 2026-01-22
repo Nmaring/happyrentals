@@ -1,0 +1,322 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api";
+import { listPaymentMethods, listPayments, createPayment, deletePayment } from "../api/payments";
+
+function todayISO() {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+export default function PaymentsPage() {
+  const [payments, setPayments] = useState([]);
+  const [methods, setMethods] = useState([]);
+
+  const [tenants, setTenants] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [leases, setLeases] = useState([]);
+
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const [showModal, setShowModal] = useState(false);
+  const [form, setForm] = useState({
+    lease_id: "",
+    tenant_id: "",
+    unit_id: "",
+    amount: "",
+    payment_date: todayISO(),
+    method: "cash",
+    channel: "online",
+    processor: "",
+    external_reference: "",
+    status: "received",
+    notes: "",
+  });
+
+  async function refreshAll() {
+    setLoading(true);
+    setErr("");
+    try {
+      const [pmts, m, t, u, l] = await Promise.all([
+        listPayments(),
+        listPaymentMethods(),
+        api.get("/tenants"),
+        api.get("/units"),
+        api.get("/leases"),
+      ]);
+      setPayments(pmts || []);
+      setMethods(m || []);
+      setTenants(t.data || []);
+      setUnits(u.data || []);
+      setLeases(l.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load payments");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshAll();
+  }, []);
+
+  const tenantMap = useMemo(() => {
+    const m = new Map();
+    (tenants || []).forEach((t) => {
+      const name = `${t.first_name || ""} ${t.last_name || ""}`.trim() || t.full_name || t.email || `Tenant ${t.id}`;
+      m.set(Number(t.id), name);
+    });
+    return m;
+  }, [tenants]);
+
+  const unitMap = useMemo(() => {
+    const m = new Map();
+    (units || []).forEach((u) => {
+      const label = (u.label && String(u.label).trim()) ? String(u.label).trim() : `Unit ${u.id}`;
+      m.set(Number(u.id), label);
+    });
+    return m;
+  }, [units]);
+
+  const leaseMap = useMemo(() => {
+    const m = new Map();
+    (leases || []).forEach((l) => {
+      m.set(Number(l.id), `Lease ${l.id} — Unit ${l.unit_id} — Tenant ${l.tenant_id}`);
+    });
+    return m;
+  }, [leases]);
+
+  async function onCreate(e) {
+    e.preventDefault();
+    setErr("");
+    try {
+      const payload = {
+        ...form,
+        lease_id: form.lease_id ? Number(form.lease_id) : null,
+        tenant_id: form.tenant_id ? Number(form.tenant_id) : null,
+        unit_id: form.unit_id ? Number(form.unit_id) : null,
+        amount: form.amount ? Number(form.amount) : 0,
+      };
+      await createPayment(payload);
+      setShowModal(false);
+      setForm((f) => ({ ...f, amount: "", external_reference: "", notes: "" }));
+      await refreshAll();
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || e2.message || "Create failed");
+    }
+  }
+
+  async function onDelete(id) {
+    if (!confirm("Delete this payment?")) return;
+    try {
+      await deletePayment(id);
+      await refreshAll();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Delete failed");
+    }
+  }
+
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>Payments</h2>
+        <button onClick={() => setShowModal(true)}>+ Add Payment</button>
+      </div>
+
+      <div style={{ marginTop: 8, opacity: 0.8 }}>
+        Track any payment type now (cash/check/Zelle/Venmo/etc). Card/ACH integrations come later.
+      </div>
+
+      {err && (
+        <div style={{ marginTop: 12, padding: 10, background: "#ffe8e8", border: "1px solid #ffb3b3" }}>
+          {String(err)}
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        {loading ? (
+          <div>Loading…</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table width="100%" cellPadding="8" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+                  <th>ID</th>
+                  <th>Date</th>
+                  <th>Amount</th>
+                  <th>Method</th>
+                  <th>Tenant</th>
+                  <th>Unit</th>
+                  <th>Lease</th>
+                  <th>Status</th>
+                  <th>Ref</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {(payments || []).map((p) => (
+                  <tr key={p.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                    <td>{p.id}</td>
+                    <td>{p.payment_date}</td>
+                    <td>${Number(p.amount || 0).toFixed(2)}</td>
+                    <td>{p.method}</td>
+                    <td>{p.tenant_id ? tenantMap.get(Number(p.tenant_id)) || p.tenant_id : "-"}</td>
+                    <td>{p.unit_id ? unitMap.get(Number(p.unit_id)) || p.unit_id : "-"}</td>
+                    <td>{p.lease_id ? leaseMap.get(Number(p.lease_id)) || p.lease_id : "-"}</td>
+                    <td>{p.status}</td>
+                    <td style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {p.external_reference || "-"}
+                    </td>
+                    <td>
+                      <button onClick={() => onDelete(p.id)}>Delete</button>
+                    </td>
+                  </tr>
+                ))}
+                {(!payments || payments.length === 0) && (
+                  <tr>
+                    <td colSpan="10" style={{ padding: 12, opacity: 0.7 }}>
+                      No payments yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {showModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 9999,
+          }}
+          onMouseDown={() => setShowModal(false)}
+        >
+          <div
+            style={{
+              width: "min(920px, 100%)",
+              maxHeight: "85vh",
+              overflow: "auto",
+              background: "white",
+              borderRadius: 12,
+              padding: 16,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0 }}>Add Payment</h3>
+              <button onClick={() => setShowModal(false)}>Close</button>
+            </div>
+
+            <form onSubmit={onCreate} style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <label>
+                Lease (optional)
+                <select value={form.lease_id} onChange={(e) => setForm((f) => ({ ...f, lease_id: e.target.value }))}>
+                  <option value="">—</option>
+                  {(leases || []).map((l) => (
+                    <option key={l.id} value={l.id}>
+                      Lease {l.id} (Tenant {l.tenant_id}, Unit {l.unit_id})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Tenant (optional)
+                <select value={form.tenant_id} onChange={(e) => setForm((f) => ({ ...f, tenant_id: e.target.value }))}>
+                  <option value="">—</option>
+                  {(tenants || []).map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {(`${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || "Tenant")} (#{t.id})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Unit (optional)
+                <select value={form.unit_id} onChange={(e) => setForm((f) => ({ ...f, unit_id: e.target.value }))}>
+                  <option value="">—</option>
+                  {(units || []).map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {(u.label && String(u.label).trim()) ? String(u.label).trim() : `Unit ${u.id}`} (#{u.id})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Date
+                <input type="date" value={form.payment_date} onChange={(e) => setForm((f) => ({ ...f, payment_date: e.target.value }))} />
+              </label>
+
+              <label>
+                Amount
+                <input value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} placeholder="1500" />
+              </label>
+
+              <label>
+                Method
+                <select value={form.method} onChange={(e) => setForm((f) => ({ ...f, method: e.target.value }))}>
+                  {(methods || []).map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Channel
+                <select value={form.channel} onChange={(e) => setForm((f) => ({ ...f, channel: e.target.value }))}>
+                  <option value="online">online</option>
+                  <option value="in_person">in_person</option>
+                  <option value="mail">mail</option>
+                  <option value="lockbox">lockbox</option>
+                  <option value="other">other</option>
+                </select>
+              </label>
+
+              <label>
+                Processor (optional)
+                <input value={form.processor} onChange={(e) => setForm((f) => ({ ...f, processor: e.target.value }))} placeholder="Stripe / Venmo / Zelle / etc" />
+              </label>
+
+              <label>
+                External Reference (optional)
+                <input value={form.external_reference} onChange={(e) => setForm((f) => ({ ...f, external_reference: e.target.value }))} placeholder="transaction id / memo" />
+              </label>
+
+              <label>
+                Status
+                <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
+                  <option value="received">received</option>
+                  <option value="pending">pending</option>
+                  <option value="failed">failed</option>
+                  <option value="refunded">refunded</option>
+                </select>
+              </label>
+
+              <label style={{ gridColumn: "1 / -1" }}>
+                Notes
+                <textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={3} />
+              </label>
+
+              <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button type="button" onClick={() => setShowModal(false)}>Cancel</button>
+                <button type="submit">Save Payment</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

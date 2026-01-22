@@ -1,0 +1,25 @@
+// frontend/src/api/leases.js
+import api from "./api.js";
+
+export async function listLeases({ tenantId = null, unitId = null } = {}) {
+  const params = {};
+  if (tenantId !== null && tenantId !== "" && tenantId !== undefined) params.tenant_id = Number(tenantId);
+  if (unitId !== null && unitId !== "" && unitId !== undefined) params.unit_id = Number(unitId);
+  const { data } = await api.get("/leases", { params });
+  return data;
+}
+
+export async function createLease(payload) {
+  const { data } = await api.post("/leases", payload);
+  return data;
+}
+
+export async function updateLease(id, payload) {
+  const { data } = await api.put(`/leases/${id}`, payload);
+  return data;
+}
+
+export async function deleteLease(id) {
+  const { data } = await api.delete(`/leases/${id}`);
+  return data;
+}

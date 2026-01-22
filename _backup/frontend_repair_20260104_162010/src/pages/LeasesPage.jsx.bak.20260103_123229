@@ -1,0 +1,224 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api.js";
+
+function yyyyMmDd(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export default function LeasesPage() {
+  const [tenants, setTenants] = useState([]);
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [leases, setLeases] = useState([]);
+
+  const [selectedPropertyId, setSelectedPropertyId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const today = useMemo(() => new Date(), []);
+  const defaultStart = useMemo(() => yyyyMmDd(today), [today]);
+  const defaultEnd = useMemo(() => {
+    const d = new Date(today);
+    d.setFullYear(d.getFullYear() + 1);
+    return yyyyMmDd(d);
+  }, [today]);
+
+  const [form, setForm] = useState({
+    tenant_id: "",
+    unit_id: "",
+    start_date: defaultStart,
+    end_date: defaultEnd,
+    monthly_rent: "",
+    status: "active",
+    notes: "",
+  });
+
+  async function loadAll() {
+    setErr("");
+    setLoading(true);
+    try {
+      const [tRes, pRes, uRes, lRes] = await Promise.all([
+        api.get("/tenants"),
+        api.get("/properties"),
+        api.get("/units"),
+        api.get("/leases"),
+      ]);
+      setTenants(tRes.data || []);
+      setProperties(pRes.data || []);
+      setUnits(uRes.data || []);
+      setLeases(lRes.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load leases data");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAll();
+  }, []);
+
+  const tenantById = useMemo(() => {
+    const m = new Map();
+    (Array.isArray(tenants) ? tenants : []).forEach((t) => m.set(Number(t.id), t));
+    return m;
+  }, [tenants]);
+
+  const unitById = useMemo(() => {
+    const m = new Map();
+    (Array.isArray(units) ? units : []).forEach((u) => m.set(Number(u.id), u));
+    return m;
+  }, [units]);
+
+  const filteredUnits = useMemo(() => {
+    const arr = Array.isArray(units) ? units : [];
+    if (!selectedPropertyId) return arr;
+    const pid = Number(selectedPropertyId);
+    return arr.filter((u) => Number(u.property_id) === pid);
+  }, [units, selectedPropertyId]);
+
+  const filteredLeases = useMemo(() => {
+    const arr = Array.isArray(leases) ? leases : [];
+    if (!selectedPropertyId) return arr;
+    const pid = Number(selectedPropertyId);
+    return arr.filter((l) => {
+      const u = unitById.get(Number(l.unit_id));
+      return u && Number(u.property_id) === pid;
+    });
+  }, [leases, selectedPropertyId, unitById]);
+
+  async function createLease(e) {
+    e.preventDefault();
+    setErr("");
+
+    const payload = {
+      tenant_id: form.tenant_id ? Number(form.tenant_id) : null,
+      unit_id: form.unit_id ? Number(form.unit_id) : null,
+      start_date: (form.start_date || "").trim() || defaultStart,
+      end_date: (form.end_date || "").trim() || defaultEnd,
+      monthly_rent: form.monthly_rent === "" ? null : Number(form.monthly_rent),
+      status: (form.status || "").trim() || "active",
+      notes: (form.notes || "").trim() || null,
+    };
+
+    setLoading(true);
+    try {
+      await api.post("/leases", payload);
+      await loadAll();
+      setForm((f) => ({ ...f, notes: "", monthly_rent: "" }));
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to create lease");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <h2 style={{ margin: 0 }}>Leases</h2>
+        <button onClick={loadAll} disabled={loading} style={buttonStyle}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
+      </div>
+
+      {err ? <div style={alertStyle}>{typeof err === "string" ? err : JSON.stringify(err)}</div> : null}
+
+      <div style={{ marginTop: 12, ...cardStyle }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>Filter by Property</div>
+        <select value={selectedPropertyId} onChange={(e) => setSelectedPropertyId(e.target.value)} style={inputStyle}>
+          <option value="">All properties…</option>
+          {(Array.isArray(properties) ? properties : []).map((p) => (
+            <option key={p.id} value={p.id}>{p.name} (#{p.id})</option>
+          ))}
+        </select>
+      </div>
+
+      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "520px 1fr", gap: 16 }}>
+        <section style={cardStyle}>
+          <div style={{ fontWeight: 700, marginBottom: 10 }}>Create Lease</div>
+
+          <form onSubmit={createLease} style={{ display: "grid", gap: 10 }}>
+            <select value={form.tenant_id} onChange={(e) => setForm((f) => ({ ...f, tenant_id: e.target.value }))} style={inputStyle} required>
+              <option value="">Select tenant…</option>
+              {(Array.isArray(tenants) ? tenants : []).map((t) => {
+                const name = `${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || `Tenant ${t.id}`;
+                return <option key={t.id} value={t.id}>{name}</option>;
+              })}
+            </select>
+
+            <select value={form.unit_id} onChange={(e) => setForm((f) => ({ ...f, unit_id: e.target.value }))} style={inputStyle} required>
+              <option value="">Select unit…</option>
+              {filteredUnits.map((u) => (
+                <option key={u.id} value={u.id}>#{u.id} {(u.label || "").trim() || `Unit ${u.id}`}</option>
+              ))}
+            </select>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <input type="date" value={form.start_date} onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))} style={inputStyle} />
+              <input type="date" value={form.end_date} onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))} style={inputStyle} />
+            </div>
+
+            <input placeholder="Monthly rent" value={form.monthly_rent} onChange={(e) => setForm((f) => ({ ...f, monthly_rent: e.target.value }))} style={inputStyle} required />
+
+            <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={inputStyle}>
+              <option value="active">active</option>
+              <option value="pending">pending</option>
+              <option value="ended">ended</option>
+            </select>
+
+            <textarea placeholder="Notes (optional)" value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} style={{ ...inputStyle, height: 80 }} />
+
+            <button type="submit" style={buttonStyle} disabled={loading}>
+              {loading ? "Working..." : "Create Lease"}
+            </button>
+          </form>
+        </section>
+
+        <section style={cardStyle}>
+          <div style={{ fontWeight: 700, marginBottom: 10 }}>Leases</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {["ID", "Tenant", "Unit", "Start", "End", "Rent", "Status"].map((h) => <th key={h} style={thStyle}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredLeases.map((l) => {
+                  const t = tenantById.get(Number(l.tenant_id));
+                  const u = unitById.get(Number(l.unit_id));
+                  const tenantName = t ? (`${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || `Tenant ${t.id}`) : `Tenant ${l.tenant_id}`;
+                  const unitLabel = u ? ((u.label || "").trim() || `Unit ${u.id}`) : `Unit ${l.unit_id}`;
+
+                  return (
+                    <tr key={l.id}>
+                      <td style={tdStyle}>{l.id}</td>
+                      <td style={tdStyle}>{tenantName}</td>
+                      <td style={tdStyle}>{unitLabel}</td>
+                      <td style={tdStyle}>{l.start_date}</td>
+                      <td style={tdStyle}>{l.end_date}</td>
+                      <td style={tdStyle}>{l.monthly_rent}</td>
+                      <td style={tdStyle}>{l.status}</td>
+                    </tr>
+                  );
+                })}
+                {filteredLeases.length === 0 ? (
+                  <tr><td colSpan={7} style={{ padding: 12, color: "#6b7280" }}>No leases found.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+const cardStyle = { background: "white", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb" };
+const inputStyle = { width: "100%", padding: "10px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "white" };
+const buttonStyle = { padding: "10px 12px", borderRadius: 10, border: "1px solid #111827", background: "#111827", color: "white", fontWeight: 700, cursor: "pointer" };
+const thStyle = { textAlign: "left", padding: "10px 8px", borderBottom: "1px solid #e5e7eb", color: "#374151" };
+const tdStyle = { padding: "10px 8px", borderBottom: "1px solid #f3f4f6" };
+const alertStyle = { background: "#fee2e2", border: "1px solid #fecaca", padding: 10, borderRadius: 10, marginTop: 12 };

@@ -1,0 +1,110 @@
+﻿# backend/app/payments/router.py
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, insert, update, delete
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.db_compat import get_db
+from app.payments.models import payments, init_payments_tables
+from app.payments.schemas import PaymentCreate, PaymentUpdate, PaymentOut
+
+router = APIRouter(prefix="/payments", tags=["payments"])
+
+PAYMENT_METHODS = [
+    "cash",
+    "check",
+    "money_order",
+    "ach",
+    "card",
+    "venmo",
+    "cashapp",
+    "apple_pay",
+    "google_pay",
+    "zelle",
+    "paypal",
+    "other",
+]
+
+@router.on_event("startup")
+def _startup():
+    init_payments_tables()
+
+def _row_to_out(row) -> PaymentOut:
+    m = dict(row._mapping)
+    if m.get("amount") is not None:
+        m["amount"] = float(m["amount"])
+    return PaymentOut(**m)
+
+@router.get("/methods", response_model=List[str])
+def list_payment_methods():
+    return PAYMENT_METHODS
+
+@router.get("", response_model=List[PaymentOut])
+def list_payments(
+    lease_id: Optional[int] = Query(default=None),
+    tenant_id: Optional[int] = Query(default=None),
+    unit_id: Optional[int] = Query(default=None),
+    db=Depends(get_db),
+):
+    stmt = select(payments)
+    if lease_id is not None:
+        stmt = stmt.where(payments.c.lease_id == lease_id)
+    if tenant_id is not None:
+        stmt = stmt.where(payments.c.tenant_id == tenant_id)
+    if unit_id is not None:
+        stmt = stmt.where(payments.c.unit_id == unit_id)
+
+    rows = db.execute(stmt.order_by(payments.c.payment_date.desc(), payments.c.id.desc())).fetchall()
+    return [_row_to_out(r) for r in rows]
+
+@router.post("", response_model=PaymentOut)
+def create_payment(payload: PaymentCreate, db=Depends(get_db)):
+    try:
+        res = db.execute(
+            insert(payments).values(
+                lease_id=payload.lease_id,
+                tenant_id=payload.tenant_id,
+                unit_id=payload.unit_id,
+                amount=payload.amount,
+                payment_date=payload.payment_date,
+                method=payload.method,
+                channel=payload.channel,
+                processor=payload.processor,
+                external_reference=payload.external_reference,
+                status=payload.status,
+                notes=payload.notes,
+            )
+        )
+        db.commit()
+        new_id = res.inserted_primary_key[0]
+        row = db.execute(select(payments).where(payments.c.id == new_id)).fetchone()
+        return _row_to_out(row)
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"DB error creating payment: {str(e)}")
+
+@router.put("/{payment_id}", response_model=PaymentOut)
+def update_payment(payment_id: int, payload: PaymentUpdate, db=Depends(get_db)):
+    existing = db.execute(select(payments).where(payments.c.id == payment_id)).fetchone()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    values = payload.model_dump(exclude_unset=True)
+    try:
+        db.execute(update(payments).where(payments.c.id == payment_id).values(**values))
+        db.commit()
+        row = db.execute(select(payments).where(payments.c.id == payment_id)).fetchone()
+        return _row_to_out(row)
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"DB error updating payment: {str(e)}")
+
+@router.delete("/{payment_id}")
+def delete_payment(payment_id: int, db=Depends(get_db)):
+    try:
+        db.execute(delete(payments).where(payments.c.id == payment_id))
+        db.commit()
+        return {"ok": True}
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"DB error deleting payment: {str(e)}")

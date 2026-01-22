@@ -1,0 +1,290 @@
+﻿import React from "react";
+import { useSearchParams } from "react-router-dom";
+
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
+
+function unwrapList(x) {
+  if (!x) return [];
+  if (Array.isArray(x)) return x;
+  if (x && Array.isArray(x.value)) return x.value;
+  if (x && Array.isArray(x.items)) return x.items;
+  if (x && Array.isArray(x.results)) return x.results;
+  return [];
+}
+
+function Modal({ open, title, onClose, children }) {
+  if (!open) return null;
+  return (
+    <div style={styles.overlay} onMouseDown={onClose}>
+      <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={{ fontWeight: 900 }}>{title}</div>
+          <button type="button" onClick={onClose} style={styles.btnGhost}>✕</button>
+        </div>
+        <div style={styles.modalBody}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+export default function PaymentsPage() {
+  const [searchParams] = useSearchParams();
+  const qpLeaseId = searchParams.get("lease_id") || "";
+  const qpNew = searchParams.get("new") || "";
+
+  const [payments, setPayments] = React.useState([]);
+  const [leases, setLeases] = React.useState([]);
+  const [units, setUnits] = React.useState([]);
+  const [tenants, setTenants] = React.useState([]);
+
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+
+  const [open, setOpen] = React.useState(false);
+
+  const emptyForm = {
+    lease_id: qpLeaseId || "",
+    amount: "",
+    payment_date: new Date().toISOString().slice(0,10),
+    method: "venmo",
+    channel: "p2p",
+    processor: "venmo",
+    fee: "0",
+    currency: "USD",
+    status: "completed",
+    notes: "",
+  };
+  const [form, setForm] = React.useState(emptyForm);
+
+  const unitLabelById = React.useMemo(() => {
+    const m = {};
+    (units || []).forEach((u) => { m[String(u.id)] = u.label || u.unit_number || u.name || `Unit ${u.id}`; });
+    return m;
+  }, [units]);
+
+  const tenantLabelById = React.useMemo(() => {
+    const m = {};
+    (tenants || []).forEach((t) => {
+      m[String(t.id)] = `${t.first_name || ""} ${t.last_name || ""}`.trim() || `Tenant ${t.id}`;
+    });
+    return m;
+  }, [tenants]);
+
+  const leaseLabelById = React.useMemo(() => {
+    const m = {};
+    (leases || []).forEach((l) => {
+      const unit = unitLabelById[String(l.unit_id)] || `Unit ${l.unit_id}`;
+      const tenant = tenantLabelById[String(l.tenant_id)] || `Tenant ${l.tenant_id}`;
+      m[String(l.id)] = `${tenant} • ${unit}`;
+    });
+    return m;
+  }, [leases, unitLabelById, tenantLabelById]);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const [lRes, uRes, tRes] = await Promise.all([
+        fetch(`${API}/leases`),
+        fetch(`${API}/units`),
+        fetch(`${API}/tenants`),
+      ]);
+      if (!lRes.ok) throw new Error(`GET /leases failed (${lRes.status})`);
+      if (!uRes.ok) throw new Error(`GET /units failed (${uRes.status})`);
+      if (!tRes.ok) throw new Error(`GET /tenants failed (${tRes.status})`);
+
+      const leasesJson = unwrapList(await lRes.json());
+      const unitsJson = unwrapList(await uRes.json());
+      const tenantsJson = unwrapList(await tRes.json());
+
+      setLeases(leasesJson);
+      setUnits(unitsJson);
+      setTenants(tenantsJson);
+
+      const pUrl = qpLeaseId ? `${API}/payments?lease_id=${encodeURIComponent(qpLeaseId)}` : `${API}/payments`;
+      const pRes = await fetch(pUrl);
+      if (!pRes.ok) throw new Error(`GET /payments failed (${pRes.status})`);
+      setPayments(unwrapList(await pRes.json()));
+    } catch (e) {
+      setError(String(e?.message || e));
+      setPayments([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  React.useEffect(() => { load(); }, [qpLeaseId]);
+
+  React.useEffect(() => {
+    if (qpNew === "1") setOpen(true);
+  }, [qpNew]);
+
+  function onChange(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  async function createPayment(e) {
+    e.preventDefault();
+    setError("");
+
+    const payload = {
+      lease_id: Number(form.lease_id),
+      amount: Number(form.amount),
+      payment_date: String(form.payment_date),
+      method: String(form.method || ""),
+      channel: String(form.channel || "manual"),
+      processor: String(form.processor || "none"),
+      fee: Number(form.fee || 0),
+      currency: String(form.currency || "USD"),
+      status: String(form.status || "completed"),
+      notes: String(form.notes || ""),
+    };
+
+    if (!Number.isInteger(payload.lease_id) || payload.lease_id <= 0) { setError("Select a lease."); return; }
+    if (!Number.isFinite(payload.amount) || payload.amount <= 0) { setError("Amount must be > 0."); return; }
+
+    try {
+      const r = await fetch(`${API}/payments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(`POST /payments failed (${r.status}): ${t}`);
+      }
+      setOpen(false);
+      setForm({ ...emptyForm, lease_id: qpLeaseId || "" });
+      await load();
+    } catch (e2) {
+      setError(String(e2?.message || e2));
+    }
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Payments</div>
+          <div style={styles.sub}>{qpLeaseId ? `Filtered by lease ${qpLeaseId}` : ""}</div>
+        </div>
+        <button type="button" style={styles.btnPrimary} onClick={() => setOpen(true)}>+ New Payment</button>
+      </div>
+
+      {error ? <div style={styles.err}>{error}</div> : null}
+
+      <div style={styles.card}>
+        <div style={styles.tableHead}>
+          <div style={{ fontWeight: 800 }}>Date</div>
+          <div style={{ fontWeight: 800 }}>Lease</div>
+          <div style={{ fontWeight: 800, textAlign: "right" }}>Amount</div>
+          <div style={{ fontWeight: 800 }}>Method</div>
+          <div style={{ fontWeight: 800 }}>Status</div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>Loading…</div>
+        ) : payments.length === 0 ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>No payments.</div>
+        ) : (
+          payments.map((p) => (
+            <div key={p.id} style={styles.row}>
+              <div>{String(p.payment_date || "")}</div>
+              <div>{leaseLabelById[String(p.lease_id)] || `Lease ${p.lease_id}`}</div>
+              <div style={{ textAlign: "right" }}>${Number(p.amount || 0).toFixed(2)}</div>
+              <div>{String(p.method || "")}</div>
+              <div>{String(p.status || "")}</div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <Modal open={open} title="Create Payment" onClose={() => setOpen(false)}>
+        <form onSubmit={createPayment} style={{ display: "grid", gap: 12 }}>
+          <label style={{ display: "grid", gap: 6 }}>
+            <div style={styles.label}>Lease</div>
+            <select style={styles.input} value={form.lease_id} onChange={(e) => onChange("lease_id", e.target.value)}>
+              <option value="">Select…</option>
+              {leases.map((l) => (
+                <option key={l.id} value={String(l.id)}>{leaseLabelById[String(l.id)] || `Lease ${l.id}`}</option>
+              ))}
+            </select>
+          </label>
+
+          <div style={styles.grid2}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Date</div>
+              <input type="date" style={styles.input} value={form.payment_date} onChange={(e) => onChange("payment_date", e.target.value)} />
+            </label>
+
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Amount</div>
+              <input type="number" step="0.01" style={styles.input} value={form.amount} onChange={(e) => onChange("amount", e.target.value)} />
+            </label>
+          </div>
+
+          <div style={styles.grid2}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Method</div>
+              <input style={styles.input} value={form.method} onChange={(e) => onChange("method", e.target.value)} />
+            </label>
+
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Processor</div>
+              <input style={styles.input} value={form.processor} onChange={(e) => onChange("processor", e.target.value)} />
+            </label>
+          </div>
+
+          <div style={styles.grid2}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Channel</div>
+              <input style={styles.input} value={form.channel} onChange={(e) => onChange("channel", e.target.value)} />
+            </label>
+
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={styles.label}>Status</div>
+              <input style={styles.input} value={form.status} onChange={(e) => onChange("status", e.target.value)} />
+            </label>
+          </div>
+
+          <label style={{ display: "grid", gap: 6 }}>
+            <div style={styles.label}>Notes</div>
+            <input style={styles.input} value={form.notes} onChange={(e) => onChange("notes", e.target.value)} />
+          </label>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <button type="button" style={styles.btn} onClick={() => setOpen(false)}>Cancel</button>
+            <button type="submit" style={styles.btnPrimary}>Create</button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: 18, display: "grid", gap: 14 },
+  headerRow: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 },
+  h1: { fontSize: 26, fontWeight: 900, letterSpacing: -0.3 },
+  sub: { color: "#475569", marginTop: 4 },
+
+  err: { background: "#fff1f2", border: "1px solid #fecdd3", color: "#9f1239", padding: 10, borderRadius: 12 },
+
+  card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden" },
+  tableHead: { display: "grid", gridTemplateColumns: "1fr 2fr 1fr 1fr 1fr", gap: 10, padding: 12, borderBottom: "1px solid #e5e7eb", background: "#fafafa" },
+  row: { display: "grid", gridTemplateColumns: "1fr 2fr 1fr 1fr 1fr", gap: 10, padding: 12, borderBottom: "1px solid #f1f5f9", alignItems: "center" },
+
+  btn: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  btnPrimary: { padding: "10px 12px", borderRadius: 12, border: "1px solid #1d4ed8", background: "#2563eb", color: "white", cursor: "pointer" },
+  btnGhost: { padding: "8px 10px", borderRadius: 10, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+
+  label: { fontSize: 12, fontWeight: 800, color: "#334155" },
+  input: { width: "100%", padding: 10, borderRadius: 12, border: "1px solid #e5e7eb", outline: "none" },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
+  modal: { width: "min(920px, 100%)", background: "white", borderRadius: 18, border: "1px solid #e5e7eb", overflow: "hidden" },
+  modalHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: 12, borderBottom: "1px solid #e5e7eb" },
+  modalBody: { padding: 12 },
+};
+

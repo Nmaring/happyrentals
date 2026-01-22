@@ -1,0 +1,40 @@
+import axios from "axios";
+
+export const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+export const api = axios.create({ baseURL: API_BASE });
+
+const TOKEN_KEY = "happyrentals_token";
+
+export function setAuthToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token);
+  api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+}
+export function clearAuthToken() {
+  localStorage.removeItem(TOKEN_KEY);
+  delete api.defaults.headers.common["Authorization"];
+}
+export function loadAuthToken() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token) setAuthToken(token);
+  return token;
+}
+
+export async function checkSetupExists(): Promise<boolean> {
+  const res = await api.get("/setup/exists");
+  return !!res.data.exists;
+}
+export async function setupCreate(email: string, password: string, full_name?: string) {
+  return api.post("/setup/create", { email, password, full_name });
+}
+export async function login(email: string, password: string) {
+  const body = new URLSearchParams();
+  body.set("username", email);
+  body.set("password", password);
+  return api.post("/auth/login", body, { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+}
+
+export async function listProperties() { return api.get("/properties/"); }
+export async function createProperty(payload: {name: string; address?: string}) { return api.post("/properties/", payload); }
+export async function deleteProperty(id: number) { return api.delete(`/properties/${id}`); }
+export async function createUnit(payload: {property_id:number; label:string}) { return api.post("/units/", payload); }
+export async function deleteUnit(id: number) { return api.delete(`/units/${id}`); }

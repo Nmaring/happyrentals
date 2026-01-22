@@ -1,0 +1,129 @@
+﻿# backend/app/leases/router.py
+import json
+import calendar
+from datetime import date
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, insert, update
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.db_compat import get_db
+from app.leases.models import leases, init_leases_tables
+from app.leases.schemas import LeaseCreate, LeaseUpdate, LeaseOut
+
+router = APIRouter(prefix="/leases", tags=["leases"])
+
+def _add_months(d: date, months: int) -> date:
+    y = d.year + (d.month - 1 + months) // 12
+    m = (d.month - 1 + months) % 12 + 1
+    day = min(d.day, calendar.monthrange(y, m)[1])
+    return date(y, m, day)
+
+def _row_to_out(row) -> LeaseOut:
+    m = dict(row._mapping)
+    clauses_raw = m.get("clauses_json")
+    try:
+        m["clauses"] = json.loads(clauses_raw) if clauses_raw else None
+    except Exception:
+        m["clauses"] = None
+    m.pop("clauses_json", None)
+    if m.get("monthly_rent") is not None:
+        m["monthly_rent"] = float(m["monthly_rent"])
+    if m.get("security_deposit") is not None:
+        m["security_deposit"] = float(m["security_deposit"])
+    return LeaseOut(**m)
+
+@router.on_event("startup")
+def _startup():
+    init_leases_tables()
+
+@router.get("", response_model=List[LeaseOut])
+def list_leases(
+    tenant_id: Optional[int] = Query(default=None),
+    unit_id: Optional[int] = Query(default=None),
+    db=Depends(get_db),
+):
+    stmt = select(leases)
+    if tenant_id is not None:
+        stmt = stmt.where(leases.c.tenant_id == tenant_id)
+    if unit_id is not None:
+        stmt = stmt.where(leases.c.unit_id == unit_id)
+
+    rows = db.execute(stmt.order_by(leases.c.id.desc())).fetchall()
+    return [_row_to_out(r) for r in rows]
+
+@router.post("", response_model=LeaseOut)
+def create_lease(payload: LeaseCreate, db=Depends(get_db)):
+    start = payload.start_date or date.today()
+
+    # Auto-default end_date depending on lease_type:
+    end = payload.end_date
+    if payload.lease_type == "fixed_term":
+        months = payload.term_months or 12
+        if end is None:
+            end = _add_months(start, months)
+    elif payload.lease_type in ("month_to_month", "open_ended"):
+        end = None
+
+    clauses_json = json.dumps(payload.clauses) if payload.clauses else None
+
+    try:
+        res = db.execute(
+            insert(leases).values(
+                tenant_id=payload.tenant_id,
+                unit_id=payload.unit_id,
+                state=payload.state.upper(),
+                lease_type=payload.lease_type,
+                term_months=payload.term_months,
+                start_date=start,
+                end_date=end,
+                monthly_rent=payload.monthly_rent,
+                security_deposit=payload.security_deposit,
+                rent_due_day=payload.rent_due_day,
+                status=payload.status,
+                clauses_json=clauses_json,
+            )
+        )
+        db.commit()
+        new_id = res.inserted_primary_key[0]
+        row = db.execute(select(leases).where(leases.c.id == new_id)).fetchone()
+        return _row_to_out(row)
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"DB error creating lease: {str(e)}")
+
+@router.put("/{lease_id}", response_model=LeaseOut)
+def update_lease(lease_id: int, payload: LeaseUpdate, db=Depends(get_db)):
+    existing = db.execute(select(leases).where(leases.c.id == lease_id)).fetchone()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Lease not found")
+
+    values = payload.model_dump(exclude_unset=True)
+
+    if "clauses" in values:
+        values["clauses_json"] = json.dumps(values["clauses"]) if values["clauses"] else None
+        values.pop("clauses", None)
+
+    cur = dict(existing._mapping)
+    new_start = values.get("start_date", cur.get("start_date"))
+    new_type = values.get("lease_type", cur.get("lease_type"))
+    new_term = values.get("term_months", cur.get("term_months") or 12)
+
+    if "end_date" not in values:
+        if new_type == "fixed_term":
+            values["end_date"] = _add_months(new_start, int(new_term))
+        if new_type in ("month_to_month", "open_ended"):
+            values["end_date"] = None
+
+    if "state" in values and values["state"]:
+        values["state"] = values["state"].upper()
+
+    try:
+        db.execute(update(leases).where(leases.c.id == lease_id).values(**values))
+        db.commit()
+        row = db.execute(select(leases).where(leases.c.id == lease_id)).fetchone()
+        return _row_to_out(row)
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"DB error updating lease: {str(e)}")

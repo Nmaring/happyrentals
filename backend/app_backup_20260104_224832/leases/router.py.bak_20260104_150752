@@ -1,0 +1,185 @@
+﻿# backend/app/leases/router.py
+import json
+import calendar
+from datetime import date, datetime
+from typing import List, Optional, Any, Dict
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import select, insert
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.db_compat import get_db
+from app.leases.models import leases, init_leases_tables
+from app.leases.schemas import LeaseCreate, LeaseUpdate, LeaseOut
+
+router = APIRouter(prefix="/leases", tags=["leases"])
+
+
+def _add_months(d: date, months: int) -> date:
+    y = d.year + (d.month - 1 + months) // 12
+    m = (d.month - 1 + months) % 12 + 1
+    day = min(d.day, calendar.monthrange(y, m)[1])
+    return date(y, m, day)
+
+
+def _parse_date(v: Any) -> Optional[date]:
+    """
+    Accepts:
+      - None / "" -> None
+      - date -> date
+      - "YYYY-MM-DD" -> date
+      - "YYYY-M-D" -> normalized + date
+    """
+    if v is None:
+        return None
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+
+    # Normalize "YYYY-M-D" -> "YYYY-MM-DD"
+    parts = s.split("-")
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        y, mo, da = parts
+        s = f"{int(y):04d}-{int(mo):02d}-{int(da):02d}"
+
+    return date.fromisoformat(s)
+
+
+def _safe_json_loads(v: Any) -> Dict[str, Any]:
+    if v is None:
+        return {}
+    if isinstance(v, dict):
+        return v
+    s = str(v).strip()
+    if not s:
+        return {}
+    try:
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _row_to_out(row) -> LeaseOut:
+    m = dict(row._mapping)
+
+    # Convert stored JSON string -> dict for API
+    m["clauses_json"] = _safe_json_loads(m.get("clauses_json"))
+
+    # Ensure numeric types
+    if m.get("monthly_rent") is not None:
+        m["monthly_rent"] = float(m["monthly_rent"])
+    if m.get("security_deposit") is not None:
+        m["security_deposit"] = float(m["security_deposit"])
+
+    return LeaseOut(**m)
+
+
+@router.on_event("startup")
+def _startup():
+    init_leases_tables()
+
+
+@router.get("", response_model=List[LeaseOut])
+def list_leases(
+    tenant_id: Optional[int] = Query(default=None),
+    unit_id: Optional[int] = Query(default=None),
+    db=Depends(get_db),
+):
+    try:
+        stmt = select(leases)
+        if tenant_id is not None:
+            stmt = stmt.where(leases.c.tenant_id == tenant_id)
+        if unit_id is not None:
+            stmt = stmt.where(leases.c.unit_id == unit_id)
+
+        rows = db.execute(stmt.order_by(leases.c.id.desc())).fetchall()
+        return [_row_to_out(r) for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"/leases failed: {type(e).__name__}: {str(e)}")
+
+
+@router.post("", response_model=LeaseOut)
+def create_lease(payload: LeaseCreate, db=Depends(get_db)):
+    try:
+        # Dates come in as strings from schema; parse to date
+        start = _parse_date(payload.start_date) or date.today()
+        end = _parse_date(payload.end_date)
+
+        lease_type = (payload.lease_type or "month_to_month").strip()
+        state = (payload.state or "MN").strip().upper()
+
+        term_months = payload.term_months
+
+        # Smart defaults:
+        if lease_type == "fixed_term":
+            months = int(term_months or 12)
+            term_months = months
+            if end is None:
+                end = _add_months(start, months)
+        elif lease_type in ("month_to_month", "open_ended"):
+            term_months = None
+            end = None
+
+        # Store clauses_json as a JSON string in DB
+        clauses_obj = payload.clauses_json or {}
+        clauses_json = json.dumps(clauses_obj) if isinstance(clauses_obj, dict) else json.dumps({})
+
+        # Defaults
+        security_deposit = payload.security_deposit
+        if security_deposit is None:
+            security_deposit = 0.0
+
+        created_at = datetime.utcnow()
+
+        res = db.execute(
+            insert(leases).values(
+                tenant_id=int(payload.tenant_id),
+                unit_id=int(payload.unit_id),
+                state=state,
+                lease_type=lease_type,
+                term_months=term_months,
+                start_date=start,
+                end_date=end,
+                monthly_rent=float(payload.monthly_rent),
+                security_deposit=float(security_deposit),
+                rent_due_day=int(payload.rent_due_day),
+                status=payload.status,
+                clauses_json=clauses_json,
+                notes=payload.notes,
+                created_at=created_at,
+            )
+        )
+        db.commit()
+
+        new_id = res.inserted_primary_key[0]
+        row = db.execute(select(leases).where(leases.c.id == new_id)).fetchone()
+        return _row_to_out(row)
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"DB error creating Lease: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"create_lease failed: {type(e).__name__}: {str(e)}")
+@router.delete("/leases/{lease_id}", status_code=204)
+def delete_lease(lease_id: int, db=Depends(get_db)):
+    Lease = db.query(Lease).filter(Lease.id == lease_id).first()
+    if not Lease:
+        raise HTTPException(status_code=404, detail="Lease not found")
+    db.delete(Lease)
+    db.commit()
+    return Response(status_code=204)
+@router.delete("/leases/{lease_id}", status_code=204)
+def delete_lease(lease_id: int, db=Depends(get_db)):
+    lease = db.query(Lease).filter(Lease.id == lease_id).first()
+    if not lease:
+        raise HTTPException(status_code=404, detail="Lease not found")
+    db.delete(lease)
+    db.commit()
+    return Response(status_code=204)
+
+
+

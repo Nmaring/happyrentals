@@ -1,0 +1,327 @@
+// frontend/src/pages/PropertiesPage.jsx
+import React from "react";
+import {
+  listProperties,
+  createProperty,
+  updateProperty,
+  deleteProperty,
+} from "../api/properties";
+
+const EMPTY = {
+  name: "",
+  address1: "",
+  address2: "",
+  city: "",
+  state: "MN",
+  zip: "",
+  notes: "",
+};
+
+function Field({ label, value, onChange, placeholder }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>
+      <input
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 10,
+          padding: "10px 12px",
+          outline: "none",
+        }}
+      />
+    </label>
+  );
+}
+
+export default function PropertiesPage() {
+  const [items, setItems] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [editing, setEditing] = React.useState(null); // null | property object (or {id:null})
+  const [form, setForm] = React.useState(EMPTY);
+  const [error, setError] = React.useState("");
+
+  const refresh = React.useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await listProperties();
+      setItems(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setError(e?.userMessage || "Failed to load properties");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const startNew = React.useCallback(() => {
+    setEditing({ id: null });
+    setForm(EMPTY);
+    setError("");
+  }, []);
+
+  const startEdit = React.useCallback((p) => {
+    setEditing(p);
+    setForm({
+      name: p.name ?? "",
+      address1: p.address1 ?? "",
+      address2: p.address2 ?? "",
+      city: p.city ?? "",
+      state: p.state ?? "MN",
+      zip: p.zip ?? "",
+      notes: p.notes ?? "",
+    });
+    setError("");
+  }, []);
+
+  const save = React.useCallback(async () => {
+    setError("");
+
+    const payload = {
+      name: form.name.trim(),
+      address1: form.address1.trim(),
+      address2: form.address2.trim() ? form.address2.trim() : null,
+      city: form.city.trim(),
+      state: form.state.trim(),
+      zip: form.zip.trim(),
+      notes: form.notes.trim() ? form.notes.trim() : null,
+    };
+
+    if (!payload.name || !payload.address1 || !payload.city || !payload.state || !payload.zip) {
+      setError("Name, Address, City, State, ZIP are required.");
+      return;
+    }
+
+    try {
+      if (editing?.id) await updateProperty(editing.id, payload);
+      else await createProperty(payload);
+
+      setEditing(null);
+      await refresh();
+    } catch (e) {
+      setError(e?.userMessage || "Save failed");
+    }
+  }, [editing, form, refresh]);
+
+  const remove = React.useCallback(
+    async (id) => {
+      setError("");
+      if (!confirm("Delete this property?")) return;
+      try {
+        await deleteProperty(id);
+        await refresh();
+      } catch (e) {
+        setError(e?.userMessage || "Delete failed");
+      }
+    },
+    [refresh]
+  );
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", gap: 14, padding: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ fontSize: 20, fontWeight: 700 }}>Properties</div>
+        <button
+          onClick={startNew}
+          style={{
+            border: "none",
+            borderRadius: 10,
+            padding: "10px 12px",
+            background: "#111",
+            color: "white",
+            cursor: "pointer",
+          }}
+        >
+          + New Property
+        </button>
+      </div>
+
+      {error ? (
+        <div style={{ padding: 10, borderRadius: 10, background: "#ffecec", border: "1px solid #ffb3b3" }}>
+          {error}
+        </div>
+      ) : null}
+
+      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 14 }}>
+        {/* List */}
+        <div
+          style={{
+            width: 420,
+            maxWidth: "100%",
+            border: "1px solid #e5e5e5",
+            borderRadius: 14,
+            overflow: "auto",
+            background: "white",
+          }}
+        >
+          {loading ? (
+            <div style={{ padding: 14, opacity: 0.7 }}>Loading…</div>
+          ) : items.length === 0 ? (
+            <div style={{ padding: 14, opacity: 0.7 }}>No properties yet.</div>
+          ) : (
+            <div>
+              {items.map((p) => (
+                <div
+                  key={p.id}
+                  style={{
+                    padding: 12,
+                    borderBottom: "1px solid #f0f0f0",
+                    display: "flex",
+                    alignItems: "flex-start",
+                    justifyContent: "space-between",
+                    gap: 10,
+                  }}
+                >
+                  <button
+                    onClick={() => startEdit(p)}
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ fontWeight: 650 }}>{p.name}</div>
+                    <div style={{ fontSize: 13, opacity: 0.7, marginTop: 2 }}>
+                      {p.address1}
+                      {p.city ? `, ${p.city}` : ""}
+                      {p.state ? ` ${p.state}` : ""}
+                      {p.zip ? ` ${p.zip}` : ""}
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => remove(p.id)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      opacity: 0.7,
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Editor */}
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            border: "1px solid #e5e5e5",
+            borderRadius: 14,
+            background: "white",
+            padding: 14,
+            overflow: "auto",
+          }}
+        >
+          {!editing ? (
+            <div style={{ opacity: 0.7 }}>Select a property or create a new one.</div>
+          ) : (
+            <div style={{ maxWidth: 700, display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 18, fontWeight: 750 }}>
+                {editing.id ? "Edit Property" : "New Property"}
+              </div>
+
+              <Field
+                label="NAME"
+                value={form.name}
+                onChange={(v) => setForm((s) => ({ ...s, name: v }))}
+                placeholder="e.g. 4255 Minnehaha Ave Fourplex"
+              />
+              <Field
+                label="ADDRESS 1"
+                value={form.address1}
+                onChange={(v) => setForm((s) => ({ ...s, address1: v }))}
+                placeholder="Street address"
+              />
+              <Field
+                label="ADDRESS 2"
+                value={form.address2}
+                onChange={(v) => setForm((s) => ({ ...s, address2: v }))}
+                placeholder="Apt / Unit / Suite (optional)"
+              />
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 140px", gap: 12 }}>
+                <Field
+                  label="CITY"
+                  value={form.city}
+                  onChange={(v) => setForm((s) => ({ ...s, city: v }))}
+                  placeholder="Minneapolis"
+                />
+                <Field
+                  label="STATE"
+                  value={form.state}
+                  onChange={(v) => setForm((s) => ({ ...s, state: v }))}
+                  placeholder="MN"
+                />
+                <Field
+                  label="ZIP"
+                  value={form.zip}
+                  onChange={(v) => setForm((s) => ({ ...s, zip: v }))}
+                  placeholder="55406"
+                />
+              </div>
+
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>NOTES</div>
+                <textarea
+                  value={form.notes}
+                  onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
+                  style={{
+                    border: "1px solid #ddd",
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    minHeight: 110,
+                    outline: "none",
+                    resize: "vertical",
+                  }}
+                />
+              </label>
+
+              <div style={{ display: "flex", gap: 10, paddingTop: 4 }}>
+                <button
+                  onClick={save}
+                  style={{
+                    border: "none",
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    background: "#111",
+                    color: "white",
+                    cursor: "pointer",
+                  }}
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => setEditing(null)}
+                  style={{
+                    border: "1px solid #ddd",
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    background: "white",
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
