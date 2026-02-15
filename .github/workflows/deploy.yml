@@ -1,8 +1,12 @@
-﻿name: Deploy HappyRentals
+name: Deploy HappyRentals
 
 on:
   push:
     branches: [ "main" ]
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-and-deploy:
@@ -28,7 +32,10 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/happyrentals:latest
+          tags: |
+  ghcr.io/${{ github.repository_owner }}/happyrentals:prod
+  ghcr.io/${{ github.repository_owner }}/happyrentals:${{ github.sha }}
+
 
       - name: Deploy on server (SSH)
         uses: appleboy/ssh-action@v1.0.3
