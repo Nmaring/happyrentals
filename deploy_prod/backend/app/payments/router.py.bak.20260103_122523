@@ -1,0 +1,214 @@
+﻿# backend/app/payments/router.py
+from typing import List, Optional, Dict, Any
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import (
+    MetaData,
+    Table,
+    Column,
+    Integer,
+    String,
+    Float,
+    Text,
+    select,
+    insert,
+    delete,
+    text,
+)
+from sqlalchemy.orm import Session
+
+from app.payments import schemas
+
+# --- DB imports (robust) ---
+try:
+    from app.db import get_db  # type: ignore
+except Exception as e:
+    raise RuntimeError("Could not import get_db from app.db") from e
+
+router = APIRouter(prefix="/payments", tags=["payments"])
+
+META = MetaData()
+_PAYMENTS: Table | None = None
+_LEASES: Table | None = None
+
+
+def _iso_today() -> str:
+    return date.today().isoformat()
+
+
+def _yyyymm_today() -> str:
+    d = date.today()
+    return f"{d.year:04d}-{d.month:02d}"
+
+
+def _ensure_leases(db: Session) -> Table:
+    global _LEASES
+    if _LEASES is not None:
+        return _LEASES
+    bind = db.get_bind()
+    _LEASES = Table("leases", META, autoload_with=bind)
+    return _LEASES
+
+
+def _add_column_if_missing(db: Session, table_name: str, col_name: str, col_def_sql: str):
+    # SQLite: PRAGMA table_info(table) gives columns
+    rows = db.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+    existing = {r[1] for r in rows}  # r[1] = name
+    if col_name in existing:
+        return
+    db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def_sql}"))
+    db.commit()
+
+
+def _ensure_payments(db: Session) -> Table:
+    global _PAYMENTS
+    bind = db.get_bind()
+
+    # If table doesn't exist, create it with the full schema
+    try:
+        t = Table("payments", META, autoload_with=bind)
+    except Exception:
+        t = Table(
+            "payments",
+            META,
+            Column("id", Integer, primary_key=True),
+            Column("lease_id", Integer, nullable=False),
+            Column("amount", Float, nullable=False),
+            Column("payment_date", String(10), nullable=True),   # YYYY-MM-DD
+            Column("payment_month", String(7), nullable=False),  # YYYY-MM
+            Column("method", String(50), nullable=True),
+            Column("source", String(80), nullable=True),
+            Column("reference", String(120), nullable=True),
+            Column("account_last4", String(10), nullable=True),
+            Column("payer_handle", String(120), nullable=True),
+            Column("status", String(20), nullable=False, default="posted"),
+            Column("fee", Float, nullable=True),
+            Column("currency", String(3), nullable=False, default="USD"),
+            Column("notes", Text, nullable=True),
+        )
+        META.create_all(bind=bind, tables=[t])
+        _PAYMENTS = t
+        return t
+
+    # Migration-lite: add new columns if missing
+    _add_column_if_missing(db, "payments", "source", "VARCHAR(80)")
+    _add_column_if_missing(db, "payments", "reference", "VARCHAR(120)")
+    _add_column_if_missing(db, "payments", "account_last4", "VARCHAR(10)")
+    _add_column_if_missing(db, "payments", "payer_handle", "VARCHAR(120)")
+    _add_column_if_missing(db, "payments", "status", "VARCHAR(20) DEFAULT 'posted'")
+    _add_column_if_missing(db, "payments", "fee", "FLOAT")
+    _add_column_if_missing(db, "payments", "currency", "VARCHAR(3) DEFAULT 'USD'")
+
+    # Reload table
+    t = Table("payments", META, autoload_with=bind)
+    _PAYMENTS = t
+    return t
+
+
+def _row_to_out(row) -> Dict[str, Any]:
+    m = dict(row._mapping)
+    return {
+        "id": int(m.get("id")),
+        "lease_id": int(m.get("lease_id")),
+        "amount": float(m.get("amount")),
+        "payment_date": m.get("payment_date"),
+        "payment_month": str(m.get("payment_month")),
+        "method": m.get("method"),
+        "source": m.get("source"),
+        "reference": m.get("reference"),
+        "account_last4": m.get("account_last4"),
+        "payer_handle": m.get("payer_handle"),
+        "status": m.get("status") or "posted",
+        "fee": m.get("fee"),
+        "currency": (m.get("currency") or "USD"),
+        "notes": m.get("notes"),
+    }
+
+
+@router.get("", response_model=List[schemas.PaymentOut])
+def list_payments(
+    lease_id: Optional[int] = None,
+    month: Optional[str] = None,  # YYYY-MM
+    tenant_id: Optional[int] = None,
+    unit_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    p = _ensure_payments(db)
+    stmt = select(*p.c)
+
+    if lease_id is not None:
+        stmt = stmt.where(p.c["lease_id"] == lease_id)
+
+    if month:
+        stmt = stmt.where(p.c["payment_month"] == month)
+
+    if tenant_id is not None or unit_id is not None:
+        l = _ensure_leases(db)
+        stmt = stmt.select_from(p.join(l, p.c["lease_id"] == l.c["id"]))
+        if tenant_id is not None and "tenant_id" in l.c:
+            stmt = stmt.where(l.c["tenant_id"] == tenant_id)
+        if unit_id is not None and "unit_id" in l.c:
+            stmt = stmt.where(l.c["unit_id"] == unit_id)
+
+    stmt = stmt.order_by(p.c["id"].desc())
+    rows = db.execute(stmt).fetchall()
+    return [_row_to_out(r) for r in rows]
+
+
+@router.post("", response_model=schemas.PaymentOut)
+def create_payment(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
+    p = _ensure_payments(db)
+    data = payload.model_dump()
+
+    if not data.get("lease_id"):
+        raise HTTPException(status_code=400, detail="lease_id is required")
+    if data.get("amount") is None:
+        raise HTTPException(status_code=400, detail="amount is required")
+
+    payment_date = (data.get("payment_date") or "").strip() or _iso_today()
+
+    payment_month = (data.get("payment_month") or "").strip()
+    if not payment_month:
+        payment_month = payment_date[:7] if len(payment_date) >= 7 else _yyyymm_today()
+
+    values = {
+        "lease_id": int(data["lease_id"]),
+        "amount": float(data["amount"]),
+        "payment_date": payment_date,
+        "payment_month": payment_month,
+        "method": (data.get("method") or None),
+        "source": (data.get("source") or None),
+        "reference": (data.get("reference") or None),
+        "account_last4": (data.get("account_last4") or None),
+        "payer_handle": (data.get("payer_handle") or None),
+        "status": (data.get("status") or "posted"),
+        "fee": data.get("fee"),
+        "currency": (data.get("currency") or "USD"),
+        "notes": (data.get("notes") or None),
+    }
+
+    try:
+        res = db.execute(insert(p).values(**values))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail={"error": "Payment insert failed", "exception": str(e), "values": values})
+
+    new_id = res.inserted_primary_key[0] if res.inserted_primary_key else None
+    row = db.execute(select(*p.c).where(p.c["id"] == new_id)).fetchone() if new_id else None
+    if not row:
+        row = db.execute(select(*p.c).order_by(p.c["id"].desc()).limit(1)).fetchone()
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to read created payment")
+    return _row_to_out(row)
+
+
+@router.delete("/{payment_id}")
+def delete_payment(payment_id: int, db: Session = Depends(get_db)):
+    p = _ensure_payments(db)
+    res = db.execute(delete(p).where(p.c["id"] == payment_id))
+    db.commit()
+    if res.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return {"ok": True}

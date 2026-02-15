@@ -1,0 +1,23 @@
+﻿import React from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+
+import AppLayout from "./components/AppLayout.jsx";
+import LeasesPage from "./pages/LeasesPage.jsx";
+import PaymentsPage from "./pages/PaymentsPage.jsx";
+import UnitsPage from "./pages/UnitsPage.jsx";
+import TenantsPage from "./pages/TenantsPage.jsx";
+
+export default function App() {
+  return (
+    <AppLayout>
+      <Routes>
+        <Route path="/" element={<Navigate to="/leases" replace />} />
+        <Route path="/leases" element={<LeasesPage />} />
+        <Route path="/payments" element={<PaymentsPage />} />
+        <Route path="/units" element={<UnitsPage />} />
+        <Route path="/tenants" element={<TenantsPage />} />
+        <Route path="*" element={<Navigate to="/leases" replace />} />
+      </Routes>
+    </AppLayout>
+  );
+}

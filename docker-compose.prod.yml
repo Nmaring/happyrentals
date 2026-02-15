@@ -1,0 +1,25 @@
+﻿services:
+  app:
+    image: ghcr.io/YOUR_GITHUB_USERNAME/happyrentals:latest
+    container_name: happyrentals-app
+    env_file:
+      - .env.prod
+    ports:
+      - "80:8000"
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16
+    container_name: happyrentals-postgres
+    environment:
+      POSTGRES_USER: happyrentals
+      POSTGRES_PASSWORD: CHANGE_ME
+      POSTGRES_DB: happyrentals
+    volumes:
+      - happyrentals_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  happyrentals_pgdata:

@@ -1,0 +1,45 @@
+﻿# backend/app/payments/schemas.py
+from typing import Optional, Literal
+from pydantic import BaseModel, Field
+
+PaymentStatus = Literal["posted", "pending", "failed", "refunded"]
+
+class PaymentCreate(BaseModel):
+    lease_id: int
+    amount: float
+
+    payment_date: Optional[str] = None   # YYYY-MM-DD
+    payment_month: Optional[str] = None  # YYYY-MM
+
+    method: Optional[str] = None         # cash, ach, credit_card, venmo, etc.
+    source: Optional[str] = None         # bank name, stripe, square, chase, etc.
+    reference: Optional[str] = None      # confirmation / transaction id
+    account_last4: Optional[str] = None  # last 4 digits if relevant
+    payer_handle: Optional[str] = None   # @handle, phone, email for p2p
+    status: PaymentStatus = "posted"
+
+    fee: Optional[float] = None
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+
+    notes: Optional[str] = None
+
+
+class PaymentOut(BaseModel):
+    id: int
+    lease_id: int
+    amount: float
+
+    payment_date: Optional[str] = None
+    payment_month: str
+
+    method: Optional[str] = None
+    source: Optional[str] = None
+    reference: Optional[str] = None
+    account_last4: Optional[str] = None
+    payer_handle: Optional[str] = None
+    status: str
+
+    fee: Optional[float] = None
+    currency: str
+
+    notes: Optional[str] = None

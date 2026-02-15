@@ -1,0 +1,319 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api";
+
+function isoToday() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+
+function Modal({ title, open, onClose, children }) {
+  if (!open) return null;
+  return (
+    <div style={styles.overlay} onMouseDown={onClose}>
+      <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={{ fontWeight: 800, fontSize: 18 }}>{title}</div>
+          <button style={styles.btnGhost} onClick={onClose}>✕</button>
+        </div>
+        <div style={styles.modalBody}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+const METHOD_OPTIONS = [
+  { value: "cash", label: "Cash" },
+  { value: "check", label: "Check" },
+  { value: "bank", label: "Bank Transfer" },
+  { value: "card", label: "Card" },
+  { value: "venmo", label: "Venmo" },
+  { value: "zelle", label: "Zelle" },
+  { value: "paypal", label: "PayPal" },
+  { value: "other", label: "Other" },
+];
+
+function methodToDefaults(method) {
+  const m = String(method || "").toLowerCase();
+  if (m === "venmo" || m === "paypal") return { channel: "p2p", processor: m };
+  if (m === "zelle") return { channel: "bank", processor: "none" };
+  if (m === "card") return { channel: "processor", processor: "stripe" };
+  if (m === "check") return { channel: "manual", processor: "none" };
+  if (m === "cash") return { channel: "cash", processor: "none" };
+  return { channel: "other", processor: "none" };
+}
+
+export default function PaymentsPage() {
+  const [payments, setPayments] = useState([]);
+  const [leases, setLeases] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [tenants, setTenants] = useState([]);
+
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(() => ({
+    lease_id: "",
+    amount: "",
+    payment_date: isoToday(),
+    method: "venmo",
+    channel: "p2p",
+    processor: "venmo",
+    fee: 0,
+    currency: "USD",
+    status: "completed",
+    notes: "",
+  }));
+
+  async function refreshAll() {
+    setLoading(true);
+    setErr("");
+    try {
+      const [p, l, u, t] = await Promise.all([
+        api.get("/payments"),
+        api.get("/leases"),
+        api.get("/units"),
+        api.get("/tenants"),
+      ]);
+      setPayments(Array.isArray(p.data) ? p.data : []);
+      setLeases(Array.isArray(l.data) ? l.data : []);
+      setUnits(Array.isArray(u.data) ? u.data : []);
+      setTenants(Array.isArray(t.data) ? t.data : []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { refreshAll(); }, []);
+
+  const leaseOptions = useMemo(() => {
+    return (leases || []).map((l) => {
+      const tenant = (tenants || []).find((t) => String(t.id) === String(l.tenant_id));
+      const unit = (units || []).find((u) => String(u.id) === String(l.unit_id));
+      const tenantName = tenant ? `${tenant.first_name} ${tenant.last_name}` : `Tenant ${l.tenant_id}`;
+      const unitLabel = unit ? (unit.label || `Unit ${l.unit_id}`) : `Unit ${l.unit_id}`;
+      return { id: l.id, label: `Lease ${l.id} — ${tenantName} — ${unitLabel}` };
+    });
+  }, [leases, tenants, units]);
+
+  function onChange(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  function openCreate() {
+    const firstLeaseId = leaseOptions[0]?.id ?? "";
+    setErr("");
+    setForm({
+      lease_id: firstLeaseId,
+      amount: "",
+      payment_date: isoToday(),
+      method: "venmo",
+      channel: "p2p",
+      processor: "venmo",
+      fee: 0,
+      currency: "USD",
+      status: "completed",
+      notes: "",
+    });
+    setOpen(true);
+  }
+
+  async function createPayment(e) {
+    e?.preventDefault?.();
+    setErr("");
+    try {
+      const payload = {
+        lease_id: Number(form.lease_id),
+        amount: Number(form.amount),
+        payment_date: form.payment_date || undefined,
+        method: form.method || "cash",
+        channel: form.channel || "manual",
+        processor: form.processor || "none",
+        fee: Number(form.fee || 0),
+        currency: form.currency || "USD",
+        status: form.status || "completed",
+        notes: form.notes || "",
+      };
+
+      if (!payload.lease_id || !payload.amount) {
+        setErr("Lease and Amount are required.");
+        return;
+      }
+
+      await api.post("/payments", payload);
+      setOpen(false);
+      await refreshAll();
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || e2.message || "Create payment failed");
+    }
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Payments</div>
+          <div style={styles.sub}>Record payments and view history.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.btn} onClick={refreshAll} disabled={loading}>
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+          <button style={styles.btnPrimary} onClick={openCreate}>
+            Record Payment
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={styles.err}>{err}</div> : null}
+
+      <div style={styles.card}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>ID</th>
+              <th style={styles.th}>Lease</th>
+              <th style={styles.th}>Date</th>
+              <th style={styles.thRight}>Amount</th>
+              <th style={styles.th}>Method</th>
+              <th style={styles.th}>Channel</th>
+              <th style={styles.th}>Processor</th>
+              <th style={styles.th}>Status</th>
+              <th style={styles.th}>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(!payments || payments.length === 0) ? (
+              <tr><td colSpan={9} style={styles.tdEmpty}>No payments yet.</td></tr>
+            ) : payments.map((p) => (
+              <tr key={p.id ?? `${p.lease_id}-${p.payment_date}-${p.amount}`}>
+                <td style={styles.td}>{p.id ?? ""}</td>
+                <td style={styles.td}>{p.lease_id}</td>
+                <td style={styles.td}>{p.payment_date ?? ""}</td>
+                <td style={styles.tdRight}>${Number(p.amount || 0).toFixed(2)}</td>
+                <td style={styles.td}>{p.method}</td>
+                <td style={styles.td}>{p.channel}</td>
+                <td style={styles.td}>{p.processor}</td>
+                <td style={styles.td}>{p.status}</td>
+                <td style={styles.td}>{p.notes ?? ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <Modal title="Record Payment" open={open} onClose={() => setOpen(false)}>
+        <form onSubmit={createPayment}>
+          <div style={styles.grid2}>
+            <div>
+              <label style={styles.label}>Lease</label>
+              <select style={styles.input} value={form.lease_id} onChange={(e) => onChange("lease_id", e.target.value)}>
+                <option value="">— Select —</option>
+                {(leaseOptions || []).map((l) => (
+                  <option key={l.id} value={l.id}>{l.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label style={styles.label}>Payment Date</label>
+              <input type="date" style={styles.input} value={form.payment_date} onChange={(e) => onChange("payment_date", e.target.value)} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Amount</label>
+              <input type="number" step="0.01" style={styles.input} value={form.amount} onChange={(e) => onChange("amount", e.target.value)} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Fee (optional)</label>
+              <input type="number" step="0.01" style={styles.input} value={form.fee} onChange={(e) => onChange("fee", e.target.value)} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Method</label>
+              <select
+                style={styles.input}
+                value={form.method}
+                onChange={(e) => {
+                  const m = e.target.value;
+                  const d = methodToDefaults(m);
+                  setForm((f) => ({ ...f, method: m, channel: d.channel, processor: d.processor }));
+                }}
+                {METHOD_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label style={styles.label}>Channel</label>
+              <select style={styles.input} value={form.channel} onChange={(e) => onChange("channel", e.target.value)}>
+                <option value="cash">cash</option>
+                <option value="manual">manual</option>
+                <option value="bank">bank</option>
+                <option value="card">card</option>
+                <option value="p2p">p2p</option>
+                <option value="processor">processor</option>
+                <option value="other">other</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={styles.label}>Processor</label>
+              <input style={styles.input} value={form.processor} onChange={(e) => onChange("processor", e.target.value)} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Status</label>
+              <select style={styles.input} value={form.status} onChange={(e) => onChange("status", e.target.value)}>
+                <option value="completed">completed</option>
+                <option value="pending">pending</option>
+                <option value="failed">failed</option>
+              </select>
+            </div>
+
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label style={styles.label}>Notes</label>
+              <textarea style={{ ...styles.input, height: 80 }} value={form.notes} onChange={(e) => onChange("notes", e.target.value)} />
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 14 }}>
+            <button type="button" style={styles.btn} onClick={() => setOpen(false)}>Cancel</button>
+            <button type="submit" style={styles.btnPrimary}>Save Payment</button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: 18, display: "grid", gap: 14 },
+  headerRow: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 },
+  h1: { fontSize: 26, fontWeight: 900, letterSpacing: -0.3 },
+  sub: { color: "#475569", marginTop: 4 },
+  err: { background: "#fff1f2", border: "1px solid #fecdd3", color: "#9f1239", padding: 10, borderRadius: 12 },
+  card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "left", padding: 10, fontSize: 12, color: "#475569", borderBottom: "1px solid #e5e7eb" },
+  thRight: { textAlign: "right", padding: 10, fontSize: 12, color: "#475569", borderBottom: "1px solid #e5e7eb" },
+  td: { padding: 10, borderBottom: "1px solid #f1f5f9", fontSize: 13 },
+  tdRight: { padding: 10, borderBottom: "1px solid #f1f5f9", fontSize: 13, textAlign: "right" },
+  tdEmpty: { padding: 16, color: "#475569" },
+  btn: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  btnPrimary: { padding: "10px 12px", borderRadius: 12, border: "1px solid #1d4ed8", background: "#2563eb", color: "white", cursor: "pointer" },
+  btnGhost: { padding: "6px 10px", borderRadius: 10, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  label: { display: "block", fontSize: 12, fontWeight: 700, marginBottom: 6, color: "#334155" },
+  input: { width: "100%", padding: 10, borderRadius: 12, border: "1px solid #e5e7eb", outline: "none" },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
+  modal: { width: "min(920px, 100%)", background: "white", borderRadius: 18, border: "1px solid #e5e7eb", overflow: "hidden" },
+  modalHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: 12, borderBottom: "1px solid #e5e7eb" },
+  modalBody: { padding: 12 },
+};
+
+

@@ -1,0 +1,125 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import api from "../api/api";
+
+function unwrapList(x) {
+  if (Array.isArray(x)) return x;
+  if (x && Array.isArray(x.value)) return x.value;
+  return [];
+}
+
+export default function UnitsPage() {
+  const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const propertyId = searchParams.get("property_id") || "";
+
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const unitsUrl = useMemo(() => {
+    return propertyId ? `/units?property_id=${encodeURIComponent(propertyId)}` : "/units";
+  }, [propertyId]);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const [pRes, uRes] = await Promise.all([
+        api.get("/properties"),
+        api.get(unitsUrl),
+      ]);
+      setProperties(unwrapList(pRes.data));
+      setUnits(unwrapList(uRes.data));
+    } catch (e) {
+      setError(e?.response?.data?.detail || e?.message || "Failed to load units.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); }, [unitsUrl]);
+
+  function onPickProperty(v) {
+    if (!v) setSearchParams({});
+    else setSearchParams({ property_id: String(v) });
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Units</div>
+          <div style={styles.sub}>Filter by property and jump into leases.</div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <select
+            value={propertyId}
+            onChange={(e) => onPickProperty(e.target.value)}
+            style={styles.select}
+          >
+            <option value="">All properties</option>
+            {properties.map((p) => (
+              <option key={p.id} value={p.id}>{p.name || Property }</option>
+            ))}
+          </select>
+
+          <button type="button" style={styles.btn} onClick={load}>Refresh</button>
+        </div>
+      </div>
+
+      {error ? <div style={styles.err}>{error}</div> : null}
+
+      <div style={styles.card}>
+        <div style={styles.tableHead}>
+          <div style={{ fontWeight: 800 }}>Unit</div>
+          <div style={{ fontWeight: 800 }}>Property</div>
+          <div style={{ fontWeight: 800 }}>Details</div>
+          <div style={{ fontWeight: 800, textAlign: "right" }}>Actions</div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>Loading…</div>
+        ) : units.length === 0 ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>No units found.</div>
+        ) : (
+          units.map((u) => {
+            const prop = properties.find((p) => String(p.id) === String(u.property_id));
+            const label = u.label || u.unit_number || u.name || "Unit";
+            const details = [
+              (u.beds != null ? `${u.beds} bd` : null),
+              (u.baths != null ? `${u.baths} ba` : null),
+              (u.monthly_rent != null ? `$${Number(u.monthly_rent).toFixed(0)}` : null),
+              (u.status ? String(u.status) : null),
+            ].filter(Boolean);
+                  >
+                    Tenants
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: 18, display: "grid", gap: 14 },
+  headerRow: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 },
+  h1: { fontSize: 26, fontWeight: 900, letterSpacing: -0.3 },
+  sub: { color: "#475569", marginTop: 4 },
+  err: { background: "#fff1f2", border: "1px solid #fecdd3", color: "#9f1239", padding: 10, borderRadius: 12 },
+
+  card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden" },
+  tableHead: { display: "grid", gridTemplateColumns: "1.4fr 1.6fr 2fr 1.6fr", gap: 10, padding: 12, borderBottom: "1px solid #e5e7eb", background: "#fafafa" },
+  row: { display: "grid", gridTemplateColumns: "1.4fr 1.6fr 2fr 1.6fr", gap: 10, padding: 12, borderBottom: "1px solid #f1f5f9", alignItems: "center" },
+
+  btn: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  btnGhost: { padding: "8px 10px", borderRadius: 10, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  select: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white" },
+};
+

@@ -1,0 +1,162 @@
+﻿import React from "react";
+
+const API = import.meta.env.VITE_API_URL || "/api";
+
+function unwrapList(x) {
+  if (!x) return [];
+  if (Array.isArray(x)) return x;
+  if (x && Array.isArray(x.value)) return x.value; // { value: [...], Count: n }
+  if (x && Array.isArray(x.items)) return x.items;
+  if (x && Array.isArray(x.results)) return x.results;
+  return [];
+}
+
+function monthKey(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+export default function DashboardPage() {
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+
+  const [payments, setPayments] = React.useState([]);
+  const [leases, setLeases] = React.useState([]);
+  const [units, setUnits] = React.useState([]);
+
+  const m = monthKey();
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const [pRes, lRes, uRes] = await Promise.all([
+        fetch(`${API}/payments?month=${encodeURIComponent(m)}`),
+        fetch(`${API}/leases`),
+        fetch(`${API}/units`),
+      ]);
+
+      if (!pRes.ok) throw new Error(`GET /payments?month=${m} failed (${pRes.status})`);
+      if (!lRes.ok) throw new Error(`GET /leases failed (${lRes.status})`);
+      if (!uRes.ok) throw new Error(`GET /units failed (${uRes.status})`);
+
+      setPayments(unwrapList(await pRes.json()));
+      setLeases(unwrapList(await lRes.json()));
+      setUnits(unwrapList(await uRes.json()));
+    } catch (e) {
+      setError(String(e?.message || e));
+      setPayments([]);
+      setLeases([]);
+      setUnits([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  React.useEffect(() => { load(); }, []);
+
+  const collectedThisMonth = React.useMemo(() => {
+    return (payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  }, [payments]);
+
+  const activeLeaseCount = React.useMemo(() => {
+    return (leases || []).filter((l) => String(l.status || "").toLowerCase() === "active").length;
+  }, [leases]);
+
+  const vacantUnitCount = React.useMemo(() => {
+    return (units || []).filter((u) => String(u.status || "").toLowerCase() === "vacant").length;
+  }, [units]);
+
+  const recentPayments = React.useMemo(() => {
+    // assume backend returns newest first; if not, sort by payment_date desc
+    const copy = [...(payments || [])];
+    copy.sort((a, b) => String(b.payment_date || "").localeCompare(String(a.payment_date || "")));
+    return copy.slice(0, 8);
+  }, [payments]);
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Dashboard</div>
+          <div style={styles.sub}>Snapshot for {m}</div>
+        </div>
+        <button style={styles.btn} onClick={load} type="button">Refresh</button>
+      </div>
+
+      {error ? <div style={styles.err}>{error}</div> : null}
+
+      <div style={styles.grid3}>
+        <div style={styles.card}>
+          <div style={styles.kpiLabel}>Collected (month)</div>
+          <div style={styles.kpiValue}>${collectedThisMonth.toFixed(2)}</div>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.kpiLabel}>Active leases</div>
+          <div style={styles.kpiValue}>{activeLeaseCount}</div>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.kpiLabel}>Vacant units</div>
+          <div style={styles.kpiValue}>{vacantUnitCount}</div>
+        </div>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.tableHead}>
+          <div style={{ fontWeight: 800 }}>Recent payments</div>
+          <div style={{ fontWeight: 800, textAlign: "right" }}>Amount</div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>Loading…</div>
+        ) : recentPayments.length === 0 ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>No payments this month.</div>
+        ) : (
+          recentPayments.map((p) => (
+            <div key={p.id} style={styles.row}>
+              <div style={{ display: "grid", gap: 2 }}>
+                <div style={{ fontWeight: 750 }}>
+                  {String(p.payment_date || "")} • Lease {p.lease_id}
+                </div>
+                <div style={{ fontSize: 13, opacity: 0.75 }}>
+                  {String(p.method || "")} • {String(p.status || "")}
+                </div>
+              </div>
+              <div style={{ textAlign: "right", fontWeight: 750 }}>
+                ${Number(p.amount || 0).toFixed(2)}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: 18, display: "grid", gap: 14 },
+  headerRow: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 },
+  h1: { fontSize: 26, fontWeight: 900, letterSpacing: -0.3 },
+  sub: { color: "#475569", marginTop: 4 },
+
+  err: { background: "#fff1f2", border: "1px solid #fecdd3", color: "#9f1239", padding: 10, borderRadius: 12 },
+
+  grid3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 },
+
+  card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden", padding: 12 },
+  kpiLabel: { fontSize: 12, fontWeight: 800, color: "#334155" },
+  kpiValue: { fontSize: 28, fontWeight: 900, marginTop: 6 },
+
+  tableHead: { display: "grid", gridTemplateColumns: "1fr 160px", gap: 10, paddingBottom: 10, borderBottom: "1px solid #e5e7eb" },
+  row: { display: "grid", gridTemplateColumns: "1fr 160px", gap: 10, paddingTop: 10, paddingBottom: 10, borderBottom: "1px solid #f1f5f9", alignItems: "center" },
+
+  btn: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+};
+
+
+
+
+

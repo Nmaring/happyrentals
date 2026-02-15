@@ -1,0 +1,273 @@
+﻿import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { api } from "../api";
+import { useAuth } from "../providers/AuthProvider";
+
+export default function Tenants() {
+  const { token } = useAuth();
+  const [params, setParams] = useSearchParams();
+
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [tenants, setTenants] = useState([]);
+
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const propertyId = useMemo(() => {
+    const v = params.get("property_id");
+    return v ? Number(v) : null;
+  }, [params]);
+
+  const unitId = useMemo(() => {
+    const v = params.get("unit_id");
+    return v ? Number(v) : null;
+  }, [params]);
+
+  const [form, setForm] = useState({
+    full_name: "",
+    email: "",
+    phone: "",
+    lease_start: "",
+    lease_end: "",
+    rent: "",
+    deposit: "",
+    notes: "",
+  });
+
+  async function loadProperties() {
+    const list = await api.listProperties(token, { includeInactive: false });
+    setProperties(Array.isArray(list) ? list : []);
+  }
+
+  async function loadUnits(pid) {
+    if (!pid) {
+      setUnits([]);
+      return;
+    }
+    const list = await api.listUnits(token, { propertyId: pid, includeInactive: false });
+    setUnits(Array.isArray(list) ? list : []);
+  }
+
+  async function loadTenants(uid) {
+    if (!uid) {
+      setTenants([]);
+      return;
+    }
+    const list = await api.listTenants(token, { unitId: uid, includeInactive: false });
+    setTenants(Array.isArray(list) ? list : []);
+  }
+
+  async function loadAll() {
+    if (!token) return;
+    setErr("");
+    setBusy(true);
+    try {
+      await loadProperties();
+      await loadUnits(propertyId);
+      await loadTenants(unitId);
+    } catch (e) {
+      setErr(e?.message || "Failed to load tenants");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, propertyId, unitId]);
+
+  function pickProperty(e) {
+    const pid = e.target.value ? Number(e.target.value) : "";
+    if (!pid) {
+      setParams({});
+      return;
+    }
+    setParams({ property_id: String(pid) }); // clear unit selection
+  }
+
+  function pickUnit(e) {
+    const uid = e.target.value ? Number(e.target.value) : "";
+    if (!uid) {
+      setParams({ property_id: String(propertyId || "") });
+      return;
+    }
+    setParams({ property_id: String(propertyId), unit_id: String(uid) });
+  }
+
+  function onChange(e) {
+    const { name, value } = e.target;
+    setForm((f) => ({ ...f, [name]: value }));
+  }
+
+  const canCreate = unitId && form.full_name.trim();
+
+  async function createTenant(e) {
+    e.preventDefault();
+    if (!canCreate) return;
+
+    setErr("");
+    setBusy(true);
+    try {
+      await api.createTenant(token, {
+        unit_id: unitId,
+        full_name: form.full_name.trim(),
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+        lease_start: form.lease_start || null,
+        lease_end: form.lease_end || null,
+        rent: form.rent === "" ? null : Number(form.rent),
+        deposit: form.deposit === "" ? null : Number(form.deposit),
+        notes: form.notes.trim() || null,
+      });
+
+      setForm({
+        full_name: "",
+        email: "",
+        phone: "",
+        lease_start: "",
+        lease_end: "",
+        rent: "",
+        deposit: "",
+        notes: "",
+      });
+
+      await loadTenants(unitId);
+    } catch (e2) {
+      setErr(e2?.message || "Failed to create tenant");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!token) return null;
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}>
+        <h2 style={{ margin: 0 }}>Tenants</h2>
+        <button className="btn" onClick={loadAll} disabled={busy} style={{ marginLeft: "auto" }}>
+          Refresh
+        </button>
+      </div>
+
+      {err ? <div className="card" style={{ borderColor: "rgba(239,68,68,0.35)" }}>{err}</div> : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "420px 1fr", gap: 14 }}>
+        <div className="card">
+          <div style={{ fontWeight: 900, marginBottom: 10 }}>Select</div>
+
+          <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Property</label>
+          <select className="input" value={propertyId || ""} onChange={pickProperty}>
+            <option value="">â€” Choose â€”</option>
+            {properties.map((p) => (
+              <option key={p.id} value={p.id}>
+                #{p.id} â€” {p.name}
+              </option>
+            ))}
+          </select>
+
+          <div style={{ height: 10 }} />
+
+          <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Unit</label>
+          <select className="input" value={unitId || ""} onChange={pickUnit} disabled={!propertyId}>
+            <option value="">â€” Choose â€”</option>
+            {units.map((u) => (
+              <option key={u.id} value={u.id}>
+                Unit {u.unit_number} (#{u.id})
+              </option>
+            ))}
+          </select>
+
+          <div style={{ height: 14 }} />
+
+          <div style={{ fontWeight: 900, marginBottom: 10 }}>Add tenant</div>
+
+          <form onSubmit={createTenant}>
+            <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Full name</label>
+            <input className="input" name="full_name" value={form.full_name} onChange={onChange} />
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+              <div>
+                <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Email</label>
+                <input className="input" name="email" value={form.email} onChange={onChange} />
+              </div>
+              <div>
+                <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Phone</label>
+                <input className="input" name="phone" value={form.phone} onChange={onChange} />
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+              <div>
+                <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Lease start</label>
+                <input className="input" name="lease_start" value={form.lease_start} onChange={onChange} placeholder="YYYY-MM-DD" />
+              </div>
+              <div>
+                <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Lease end</label>
+                <input className="input" name="lease_end" value={form.lease_end} onChange={onChange} placeholder="YYYY-MM-DD" />
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+              <div>
+                <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Rent</label>
+                <input className="input" name="rent" value={form.rent} onChange={onChange} />
+              </div>
+              <div>
+                <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Deposit</label>
+                <input className="input" name="deposit" value={form.deposit} onChange={onChange} />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <label className="muted" style={{ fontSize: 12, fontWeight: 700 }}>Notes</label>
+              <textarea className="input" name="notes" value={form.notes} onChange={onChange} rows={3} />
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <button className="btn primary" type="submit" disabled={!canCreate || busy}>
+                Create
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div className="card">
+          <div style={{ fontWeight: 900, marginBottom: 10 }}>
+            Tenants {unitId ? `for unit #${unitId}` : ""}
+          </div>
+
+          {!unitId ? (
+            <div className="muted">Pick a unit to load tenants.</div>
+          ) : tenants.length === 0 ? (
+            <div className="muted">No tenants yet.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {tenants.map((t) => (
+                <div key={t.id} className="card" style={{ background: "rgba(255,255,255,0.03)" }}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <div style={{ fontWeight: 900 }}>{t.full_name}</div>
+                    <div className="muted" style={{ marginLeft: "auto", fontSize: 13 }}>
+                      rent {t.rent ?? "â€”"} â€¢ deposit {t.deposit ?? "â€”"}
+                    </div>
+                  </div>
+                  <div className="muted" style={{ marginTop: 6, fontSize: 13 }}>
+                    {t.email || "â€”"} â€¢ {t.phone || "â€”"}
+                  </div>
+                  {(t.lease_start || t.lease_end) ? (
+                    <div className="muted" style={{ marginTop: 6, fontSize: 13 }}>
+                      Lease: {t.lease_start || "â€”"} â†’ {t.lease_end || "â€”"}
+                    </div>
+                  ) : null}
+                  {t.notes ? <div className="muted" style={{ marginTop: 6 }}>{t.notes}</div> : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

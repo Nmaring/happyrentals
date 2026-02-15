@@ -1,0 +1,254 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api.js";
+
+function yyyyMmDd(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export default function TenantsPage() {
+  const [tenants, setTenants] = useState([]);
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [leases, setLeases] = useState([]);
+
+  const [selectedTenantId, setSelectedTenantId] = useState("");
+  const [selectedPropertyId, setSelectedPropertyId] = useState("");
+
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const today = useMemo(() => new Date(), []);
+  const defaultStart = useMemo(() => yyyyMmDd(today), [today]);
+  const defaultEnd = useMemo(() => {
+    const d = new Date(today);
+    d.setFullYear(d.getFullYear() + 1);
+    return yyyyMmDd(d);
+  }, [today]);
+
+  const [leaseForm, setLeaseForm] = useState({
+    unit_id: "",
+    start_date: defaultStart,
+    end_date: defaultEnd,
+    monthly_rent: "",
+    status: "active",
+    notes: "",
+  });
+
+  async function bootstrap() {
+    setErr("");
+    setLoading(true);
+    try {
+      const [tRes, pRes, uRes] = await Promise.all([
+        api.get("/tenants"),
+        api.get("/properties"),
+        api.get("/units"),
+      ]);
+      setTenants(tRes.data || []);
+      setProperties(pRes.data || []);
+      setUnits(uRes.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load tenants/properties/units");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadLeases(tenantId) {
+    if (!tenantId) {
+      setLeases([]);
+      return;
+    }
+    try {
+      const res = await api.get(`/leases?tenant_id=${tenantId}`);
+      setLeases(res.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load leases");
+    }
+  }
+
+  useEffect(() => {
+    bootstrap();
+  }, []);
+
+  useEffect(() => {
+    loadLeases(selectedTenantId);
+  }, [selectedTenantId]);
+
+  const selectedTenant = useMemo(() => {
+    const id = Number(selectedTenantId);
+    return (Array.isArray(tenants) ? tenants : []).find((t) => Number(t.id) === id) || null;
+  }, [tenants, selectedTenantId]);
+
+  const filteredUnits = useMemo(() => {
+    const arr = Array.isArray(units) ? units : [];
+    if (!selectedPropertyId) return arr;
+    const pid = Number(selectedPropertyId);
+    return arr.filter((u) => Number(u.property_id) === pid);
+  }, [units, selectedPropertyId]);
+
+  async function createLease(e) {
+    e.preventDefault();
+    setErr("");
+
+    if (!selectedTenantId) {
+      setErr("Select a tenant first.");
+      return;
+    }
+
+    const payload = {
+      tenant_id: Number(selectedTenantId),
+      unit_id: leaseForm.unit_id ? Number(leaseForm.unit_id) : null,
+      start_date: (leaseForm.start_date || "").trim() || defaultStart,
+      end_date: (leaseForm.end_date || "").trim() || defaultEnd,
+      monthly_rent: leaseForm.monthly_rent === "" ? null : Number(leaseForm.monthly_rent),
+      status: (leaseForm.status || "").trim() || "active",
+      notes: (leaseForm.notes || "").trim() || null,
+    };
+
+    setLoading(true);
+    try {
+      await api.post("/leases", payload);
+      await loadLeases(selectedTenantId);
+      setLeaseForm((f) => ({ ...f, notes: "", monthly_rent: "" }));
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to create lease");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 10 }}>Tenants</h2>
+      {err ? <div style={alertStyle}>{typeof err === "string" ? err : JSON.stringify(err)}</div> : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "380px 1fr", gap: 16 }}>
+        <section style={cardStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700 }}>Tenant List</div>
+            <button onClick={bootstrap} style={buttonStyle} disabled={loading}>{loading ? "Loading..." : "Refresh"}</button>
+          </div>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            {(Array.isArray(tenants) ? tenants : []).map((t) => {
+              const name = `${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || `Tenant ${t.id}`;
+              const active = String(t.id) === String(selectedTenantId);
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setSelectedTenantId(String(t.id))}
+                  style={{
+                    textAlign: "left",
+                    padding: 10,
+                    borderRadius: 12,
+                    border: "1px solid #e5e7eb",
+                    background: active ? "#111827" : "white",
+                    color: active ? "white" : "#111827",
+                    cursor: "pointer",
+                  }}>
+                  <div style={{ fontWeight: 700 }}>{name}</div>
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>#{t.id}</div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section style={cardStyle}>
+          <div style={{ fontWeight: 800, marginBottom: 10 }}>
+            {selectedTenant ? `Tenant: ${(selectedTenant.first_name || "")} ${(selectedTenant.last_name || "")}`.trim() || selectedTenant.email : "Select a tenant"}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>Filter Units by Property</div>
+              <select value={selectedPropertyId} onChange={(e) => setSelectedPropertyId(e.target.value)} style={inputStyle}>
+                <option value="">All properties…</option>
+                {(Array.isArray(properties) ? properties : []).map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} (#{p.id})</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>Create Lease</div>
+              <form onSubmit={createLease} style={{ display: "grid", gap: 8 }}>
+                <select value={leaseForm.unit_id} onChange={(e) => setLeaseForm((f) => ({ ...f, unit_id: e.target.value }))} style={inputStyle}>
+                  <option value="">Select unit…</option>
+                  {filteredUnits.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      #{u.id} {(u.label || "").trim() || `Unit ${u.id}`}
+                    </option>
+                  ))}
+                </select>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <input type="date" value={leaseForm.start_date} onChange={(e) => setLeaseForm((f) => ({ ...f, start_date: e.target.value }))} style={inputStyle} />
+                  <input type="date" value={leaseForm.end_date} onChange={(e) => setLeaseForm((f) => ({ ...f, end_date: e.target.value }))} style={inputStyle} />
+                </div>
+
+                <input
+                  placeholder="Monthly rent (e.g. 1500)"
+                  value={leaseForm.monthly_rent}
+                  onChange={(e) => setLeaseForm((f) => ({ ...f, monthly_rent: e.target.value }))}
+                  style={inputStyle}
+                />
+
+                <select value={leaseForm.status} onChange={(e) => setLeaseForm((f) => ({ ...f, status: e.target.value }))} style={inputStyle}>
+                  <option value="active">active</option>
+                  <option value="pending">pending</option>
+                  <option value="ended">ended</option>
+                </select>
+
+                <textarea
+                  placeholder="Notes (optional)"
+                  value={leaseForm.notes}
+                  onChange={(e) => setLeaseForm((f) => ({ ...f, notes: e.target.value }))}
+                  style={{ ...inputStyle, height: 70 }}
+                />
+
+                <button type="submit" style={buttonStyle} disabled={loading || !selectedTenantId}>
+                  {loading ? "Working..." : "Create Lease"}
+                </button>
+              </form>
+            </div>
+          </div>
+
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Leases</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["ID", "Unit", "Start", "End", "Rent", "Status"].map((h) => <th key={h} style={thStyle}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {(Array.isArray(leases) ? leases : []).map((l) => (
+                <tr key={l.id}>
+                  <td style={tdStyle}>{l.id}</td>
+                  <td style={tdStyle}>{l.unit_id}</td>
+                  <td style={tdStyle}>{l.start_date}</td>
+                  <td style={tdStyle}>{l.end_date}</td>
+                  <td style={tdStyle}>{l.monthly_rent}</td>
+                  <td style={tdStyle}>{l.status}</td>
+                </tr>
+              ))}
+              {(leases?.length || 0) === 0 ? (
+                <tr><td colSpan={6} style={{ padding: 12, color: "#6b7280" }}>No leases to show.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+const cardStyle = { background: "white", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb" };
+const inputStyle = { width: "100%", padding: "10px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "white" };
+const buttonStyle = { padding: "10px 12px", borderRadius: 10, border: "1px solid #111827", background: "#111827", color: "white", fontWeight: 700, cursor: "pointer" };
+const thStyle = { textAlign: "left", padding: "10px 8px", borderBottom: "1px solid #e5e7eb", color: "#374151" };
+const tdStyle = { padding: "10px 8px", borderBottom: "1px solid #f3f4f6" };
+const alertStyle = { background: "#fee2e2", border: "1px solid #fecaca", padding: 10, borderRadius: 10, marginBottom: 12 };
+
+

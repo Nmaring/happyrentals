@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+def _iso(v):
+    return _iso(v) if hasattr(v, "isoformat") else v
+ï»¿# backend/app/payments/router.py
+
+from datetime import date, datetime
+from typing import List, Optional, Any, Dict
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, insert, update, desc
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.db_compat import get_db
+from app.payments.models import payments, init_payments_tables
+from app.payments.schemas import PaymentCreate, PaymentUpdate, PaymentOut
+from app.leases.models import leases
+from datetime import date, datetime
+
+def _date_str(v):
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if isinstance(v, date):
+        return _iso(v)
+    if isinstance(v, str):
+        s = v.strip()
+        return s[:10]  # YYYY-MM-DD
+    return str(v)
+
+router = APIRouter(prefix="/payments", tags=["payments"])
+
+
+@router.on_event("startup")
+def _startup():
+    init_payments_tables()
+
+
+# ---- Payment methods you asked for (+ a few common ones) ----
+# cash, check, credit/debit, ACH/bank, Venmo/CashApp/Zelle, Apple/Google Pay, PayPal, etc.
+def _derive_channel(method: str) -> str:
+    m = (method or "").strip().lower()
+
+    if m in ("cash",):
+        return "cash"
+
+    if m in ("check", "money_order", "cashiers_check"):
+        return "check"
+
+    if m in ("ach", "bank", "wire", "eft", "direct_deposit"):
+        return "bank"
+
+    if m in ("credit_card", "debit_card", "card", "apple_pay", "google_pay"):
+        return "card"
+
+    if m in ("zelle", "venmo", "cashapp", "cash_app", "paypal"):
+        return "p2p"
+
+    if m in ("stripe", "square"):
+        return "processor"
+
+    return "other"
+
+
+def _parse_date(v: Any) -> date:
+    """
+    Accepts:
+      - None -> today
+      - date -> date
+      - "YYYY-MM-DD" or "YYYY-M-D" -> date
+    """
+    if v is None:
+        return date.today()
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    s = str(v).strip()
+    if not s:
+        return date.today()
+    parts = s.split("-")
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        y, mo, da = parts
+        s = f"{int(y):04d}-{int(mo):02d}-{int(da):02d}"
+    return date.fromisoformat(s)
+
+
+def _month_from_date(d: date) -> str:
+    return f"{d.year:04d}-{d.month:02d}"
+
+
+def _row_to_out(row) -> PaymentOut:
+    m: Dict[str, Any] = dict(row._mapping)
+
+    # normalize numeric + defaults
+    m["amount"] = float(m["amount"]) if m.get("amount") is not None else 0.0
+    m["fee"] = float(m["fee"]) if m.get("fee") is not None else 0.0
+
+    m["method"] = (m.get("method") or "cash").strip().lower()
+    m["channel"] = (m.get("channel") or _derive_channel(m["method"])).strip().lower()
+    m["processor"] = (m.get("processor") or "none").strip().lower()
+    m["currency"] = (m.get("currency") or "USD").strip().upper()
+    m["status"] = (m.get("status") or "completed").strip().lower()
+
+    return PaymentOut(**m)
+
+
+@router.get("", response_model=List[PaymentOut])
+def list_payments(
+    lease_id: Optional[int] = Query(default=None),
+    tenant_id: Optional[int] = Query(default=None),
+    unit_id: Optional[int] = Query(default=None),
+    db=Depends(get_db),
+):
+    try:
+        stmt = select(payments)
+        if lease_id is not None:
+            stmt = stmt.where(payments.c.lease_id == lease_id)
+        if tenant_id is not None and hasattr(payments.c, "tenant_id"):
+            stmt = stmt.where(payments.c.tenant_id == tenant_id)
+        if unit_id is not None and hasattr(payments.c, "unit_id"):
+            stmt = stmt.where(payments.c.unit_id == unit_id)
+
+        rows = db.execute(stmt.order_by(desc(payments.c.payment_date), desc(payments.c.id))).fetchall()
+        return [_row_to_out(r) for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"/payments failed: {type(e).__name__}: {str(e)}")
+
+
+@router.post("", response_model=PaymentOut)
+def create_payment(payload: PaymentCreate, db=Depends(get_db)):
+    try:
+        d = payload.payment_date or date.today()
+        method = payload.method
+        channel = payload.channel or _derive_channel(method)
+
+        # derive tenant_id + unit_id from lease_id
+        lease_row = db.execute(select(leases).where(leases.c.id == payload.lease_id)).fetchone()
+        if not lease_row:
+            raise HTTPException(status_code=400, detail="Invalid lease_id (lease not found)")
+
+        lease_m = dict(lease_row._mapping)
+        tenant_id = lease_m.get("tenant_id")
+        unit_id = lease_m.get("unit_id")
+
+        res = db.execute(
+            insert(payments).values(
+                lease_id=payload.lease_id,
+                tenant_id=tenant_id,
+                unit_id=unit_id,
+                amount=payload.amount,
+                payment_date=_iso(d),
+                payment_month=_month_from_date(d),
+                method=method,
+                channel=channel,
+                processor=payload.processor or "none",
+                external_reference=payload.external_reference,
+                payer_handle=payload.payer_handle,
+                account_last4=payload.account_last4,
+                fee=payload.fee or 0.0,
+                currency=payload.currency or "USD",
+                status=payload.status or "completed",
+                notes=payload.notes,
+                created_at=date.today().isoformat(),
+            )
+        )
+        db.commit()
+        new_id = res.inserted_primary_key[0]
+        row = db.execute(select(payments).where(payments.c.id == new_id)).fetchone()
+        return _row_to_out(row)
+
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"DB error creating payment: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"create_payment failed: {type(e).__name__}: {str(e)}")
+
+
+
+
+
+
+
+

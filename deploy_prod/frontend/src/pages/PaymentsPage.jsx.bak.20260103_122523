@@ -1,0 +1,372 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api.js";
+
+function yyyyMm(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+}
+function yyyyMmDd(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+const METHOD_OPTIONS = [
+  { value: "cash", label: "Cash" },
+  { value: "ach", label: "Bank (ACH / Direct)" },
+  { value: "check", label: "Check" },
+  { value: "credit_card", label: "Credit Card" },
+  { value: "debit_card", label: "Debit Card" },
+  { value: "venmo", label: "Venmo" },
+  { value: "cashapp", label: "Cash App" },
+  { value: "zelle", label: "Zelle" },
+  { value: "apple_pay", label: "Apple Pay" },
+  { value: "google_pay", label: "Google Pay" },
+  { value: "paypal", label: "PayPal" },
+  { value: "money_order", label: "Money Order" },
+  { value: "wire", label: "Wire Transfer" },
+  { value: "other", label: "Other" },
+];
+
+const STATUS_OPTIONS = [
+  { value: "posted", label: "Posted" },
+  { value: "pending", label: "Pending" },
+  { value: "failed", label: "Failed" },
+  { value: "refunded", label: "Refunded" },
+];
+
+export default function PaymentsPage() {
+  const [month, setMonth] = useState(yyyyMm(new Date()));
+  const [leases, setLeases] = useState([]);
+  const [tenants, setTenants] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [payments, setPayments] = useState([]);
+
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const [form, setForm] = useState({
+    lease_id: "",
+    amount: "",
+    payment_date: yyyyMmDd(new Date()),
+    method: "ach",
+    status: "posted",
+    source: "",
+    reference: "",
+    account_last4: "",
+    payer_handle: "",
+    fee: "",
+    currency: "USD",
+    notes: "",
+  });
+
+  async function loadAll() {
+    setErr("");
+    setLoading(true);
+    try {
+      const [lRes, tRes, uRes, pRes] = await Promise.all([
+        api.get("/leases"),
+        api.get("/tenants"),
+        api.get("/units"),
+        api.get(`/payments?month=${encodeURIComponent(month)}`),
+      ]);
+      setLeases(lRes.data || []);
+      setTenants(tRes.data || []);
+      setUnits(uRes.data || []);
+      setPayments(pRes.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load payments data");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month]);
+
+  const tenantById = useMemo(() => {
+    const m = new Map();
+    (Array.isArray(tenants) ? tenants : []).forEach((t) => m.set(Number(t.id), t));
+    return m;
+  }, [tenants]);
+
+  const unitById = useMemo(() => {
+    const m = new Map();
+    (Array.isArray(units) ? units : []).forEach((u) => m.set(Number(u.id), u));
+    return m;
+  }, [units]);
+
+  const paidByLease = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(payments) ? payments : []).forEach((p) => {
+      if (p.status && p.status !== "posted") return;
+      const id = Number(p.lease_id);
+      map.set(id, (map.get(id) || 0) + Number(p.amount || 0));
+    });
+    return map;
+  }, [payments]);
+
+  function methodLabel(v) {
+    return METHOD_OPTIONS.find((x) => x.value === v)?.label || v || "";
+  }
+
+  const method = form.method;
+
+  const showPayerHandle = ["venmo", "cashapp", "zelle", "paypal"].includes(method);
+  const showAccountLast4 = ["credit_card", "debit_card", "ach"].includes(method);
+  const showSource = ["ach", "credit_card", "debit_card", "wire"].includes(method);
+  const showReference = method !== "cash";
+
+  async function createPayment(e) {
+    e.preventDefault();
+    setErr("");
+
+    const payload = {
+      lease_id: form.lease_id ? Number(form.lease_id) : null,
+      amount: form.amount === "" ? null : Number(form.amount),
+      payment_date: (form.payment_date || "").trim() || yyyyMmDd(new Date()),
+      payment_month: month,
+      method: form.method || null,
+      status: form.status || "posted",
+      source: (form.source || "").trim() || null,
+      reference: (form.reference || "").trim() || null,
+      account_last4: (form.account_last4 || "").trim() || null,
+      payer_handle: (form.payer_handle || "").trim() || null,
+      fee: form.fee === "" ? null : Number(form.fee),
+      currency: (form.currency || "USD").trim().toUpperCase(),
+      notes: (form.notes || "").trim() || null,
+    };
+
+    setLoading(true);
+    try {
+      await api.post("/payments", payload);
+      setForm((f) => ({ ...f, amount: "", reference: "", payer_handle: "", notes: "", fee: "" }));
+      await loadAll();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to create payment");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deletePayment(id) {
+    if (!confirm("Delete this payment?")) return;
+    setLoading(true);
+    try {
+      await api.delete(`/payments/${id}`);
+      await loadAll();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to delete payment");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <h2 style={{ margin: 0, fontSize: 24, fontWeight: 900 }}>Payments</h2>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <label style={{ fontWeight: 800 }}>
+            Month{" "}
+            <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={inputStyle} />
+          </label>
+          <button onClick={loadAll} disabled={loading} style={buttonStyle}>
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={alertStyle}>{typeof err === "string" ? err : JSON.stringify(err)}</div> : null}
+
+      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "560px 1fr", gap: 16, alignItems: "start" }}>
+        <section style={cardStyle}>
+          <div style={{ fontWeight: 900, marginBottom: 10 }}>Add Payment</div>
+
+          <form onSubmit={createPayment} style={{ display: "grid", gap: 10 }}>
+            <label style={labelStyle}>
+              Lease
+              <select value={form.lease_id} onChange={(e) => setForm((f) => ({ ...f, lease_id: e.target.value }))} style={inputStyle} required>
+                <option value="">Select lease…</option>
+                {(Array.isArray(leases) ? leases : []).map((l) => {
+                  const t = tenantById.get(Number(l.tenant_id));
+                  const u = unitById.get(Number(l.unit_id));
+                  const tenantName = t ? (`${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || `Tenant ${t.id}`) : `Tenant ${l.tenant_id}`;
+                  const unitLabel = u ? ((u.label || "").trim() || `Unit ${u.id}`) : `Unit ${l.unit_id}`;
+                  return (
+                    <option key={l.id} value={l.id}>
+                      Lease #{l.id} — {tenantName} — {unitLabel} — Rent ${l.monthly_rent}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label style={labelStyle}>
+                Amount
+                <input value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} style={inputStyle} required />
+              </label>
+              <label style={labelStyle}>
+                Date
+                <input type="date" value={form.payment_date} onChange={(e) => setForm((f) => ({ ...f, payment_date: e.target.value }))} style={inputStyle} />
+              </label>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label style={labelStyle}>
+                Method
+                <select value={form.method} onChange={(e) => setForm((f) => ({ ...f, method: e.target.value }))} style={inputStyle}>
+                  {METHOD_OPTIONS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </label>
+              <label style={labelStyle}>
+                Status
+                <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={inputStyle}>
+                  {STATUS_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+              </label>
+            </div>
+
+            {showSource ? (
+              <label style={labelStyle}>
+                Source (bank/provider)
+                <input value={form.source} onChange={(e) => setForm((f) => ({ ...f, source: e.target.value }))} style={inputStyle} placeholder="e.g. Chase, Wells Fargo, Square, Stripe" />
+              </label>
+            ) : null}
+
+            {showReference ? (
+              <label style={labelStyle}>
+                Reference / Confirmation
+                <input value={form.reference} onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))} style={inputStyle} placeholder="transaction id, confirmation code" />
+              </label>
+            ) : null}
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {showAccountLast4 ? (
+                <label style={labelStyle}>
+                  Account/Card last 4
+                  <input value={form.account_last4} onChange={(e) => setForm((f) => ({ ...f, account_last4: e.target.value }))} style={inputStyle} placeholder="1234" />
+                </label>
+              ) : <div />}
+
+              {showPayerHandle ? (
+                <label style={labelStyle}>
+                  Payer handle (optional)
+                  <input value={form.payer_handle} onChange={(e) => setForm((f) => ({ ...f, payer_handle: e.target.value }))} style={inputStyle} placeholder="@handle / phone / email" />
+                </label>
+              ) : <div />}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label style={labelStyle}>
+                Fee (optional)
+                <input value={form.fee} onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))} style={inputStyle} placeholder="0" />
+              </label>
+              <label style={labelStyle}>
+                Currency
+                <input value={form.currency} onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))} style={inputStyle} />
+              </label>
+            </div>
+
+            <label style={labelStyle}>
+              Notes
+              <textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} style={{ ...inputStyle, height: 90 }} />
+            </label>
+
+            <button type="submit" style={buttonStyle} disabled={loading}>
+              {loading ? "Working..." : "Save Payment"}
+            </button>
+          </form>
+        </section>
+
+        <section style={cardStyle}>
+          <div style={{ fontWeight: 900, marginBottom: 10 }}>Rent Status — {month}</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["Lease", "Rent", "Paid (posted)", "Status"].map((h) => <th key={h} style={thStyle}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {(Array.isArray(leases) ? leases : []).map((l) => {
+                const rent = Number(l.monthly_rent || 0);
+                const paid = Number(paidByLease.get(Number(l.id)) || 0);
+                const status = paid >= rent && rent > 0 ? "PAID" : (rent === 0 ? "—" : "DUE");
+                return (
+                  <tr key={l.id}>
+                    <td style={tdStyle}>#{l.id}</td>
+                    <td style={tdStyle}>${rent}</td>
+                    <td style={tdStyle}>${paid}</td>
+                    <td style={tdStyle}>
+                      <span style={{
+                        padding: "4px 10px",
+                        borderRadius: 999,
+                        background: status === "PAID" ? "#dcfce7" : "#fee2e2",
+                        border: "1px solid " + (status === "PAID" ? "#86efac" : "#fecaca"),
+                        fontWeight: 900
+                      }}>
+                        {status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {(leases?.length || 0) === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 12, color: "#6b7280" }}>No leases found.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+
+          <div style={{ marginTop: 14, fontWeight: 900 }}>Payments — {month}</div>
+          <div style={{ overflowX: "auto", marginTop: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {["ID", "Lease", "Date", "Amount", "Method", "Ref", ""].map((h) => <th key={h} style={thStyle}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {(Array.isArray(payments) ? payments : []).map((p) => (
+                  <tr key={p.id}>
+                    <td style={tdStyle}>{p.id}</td>
+                    <td style={tdStyle}>{p.lease_id}</td>
+                    <td style={tdStyle}>{p.payment_date || ""}</td>
+                    <td style={tdStyle}>${p.amount}</td>
+                    <td style={tdStyle}>
+                      <span style={{ padding: "3px 8px", borderRadius: 999, border: "1px solid #e5e7eb", fontWeight: 800 }}>
+                        {methodLabel(p.method)}
+                      </span>
+                      {p.status && p.status !== "posted" ? (
+                        <span style={{ marginLeft: 8, padding: "3px 8px", borderRadius: 999, border: "1px solid #e5e7eb", fontWeight: 800, color: "#6b7280" }}>
+                          {p.status}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td style={tdStyle}>{p.reference || ""}</td>
+                    <td style={tdStyle}>
+                      <button onClick={() => deletePayment(p.id)} style={miniButtonStyle} disabled={loading}>Delete</button>
+                    </td>
+                  </tr>
+                ))}
+                {(payments?.length || 0) === 0 ? (
+                  <tr><td colSpan={7} style={{ padding: 12, color: "#6b7280" }}>No payments for this month.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+const cardStyle = { background: "white", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb" };
+const labelStyle = { fontWeight: 800, color: "#111827", display: "grid", gap: 6 };
+const inputStyle = { width: "100%", padding: "10px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "white" };
+const buttonStyle = { padding: "10px 12px", borderRadius: 10, border: "1px solid #111827", background: "#111827", color: "white", fontWeight: 900, cursor: "pointer" };
+const miniButtonStyle = { padding: "6px 10px", borderRadius: 10, border: "1px solid #111827", background: "white", fontWeight: 800, cursor: "pointer" };
+const thStyle = { textAlign: "left", padding: "10px 8px", borderBottom: "1px solid #e5e7eb", color: "#374151", fontWeight: 900, whiteSpace: "nowrap" };
+const tdStyle = { padding: "10px 8px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap" };
+const alertStyle = { background: "#fee2e2", border: "1px solid #fecaca", padding: 10, borderRadius: 10, marginTop: 12 };

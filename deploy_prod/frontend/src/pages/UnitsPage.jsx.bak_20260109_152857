@@ -1,0 +1,300 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import api from "../api";
+
+function unwrapList(x) {
+  if (!x) return [];
+  if (Array.isArray(x)) return x;
+  if (Array.isArray(x.value)) return x.value;      // e.g. { value: [...], Count: n }
+  if (Array.isArray(x.items)) return x.items;
+  if (Array.isArray(x.results)) return x.results;
+  return [];
+}
+
+export default function UnitsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+
+  const propertyIdFromQuery = searchParams.get("property_id") || "";
+
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [selectedPropertyId, setSelectedPropertyId] = useState(propertyIdFromQuery);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState({
+    property_id: propertyIdFromQuery || "",
+    label: "",
+    beds: "",
+    baths: "",
+    monthly_rent: "",
+    status: "vacant",
+    notes: "",
+  });
+
+  const unitsUrl = useMemo(() => {
+    return selectedPropertyId ? `/units?property_id=${encodeURIComponent(selectedPropertyId)}` : "/units";
+  }, [selectedPropertyId]);
+
+  useEffect(() => {
+    // keep URL in sync
+    const next = new URLSearchParams(searchParams);
+    if (selectedPropertyId) next.set("property_id", String(selectedPropertyId));
+    else next.delete("property_id");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPropertyId]);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function load() {
+      setLoading(true);
+      setError("");
+      try {
+        const pRes = await api.get("/properties");
+        const pBody = pRes?.data ?? pRes;
+        const pList = unwrapList(pBody);
+
+        const uRes = await api.get(unitsUrl);
+        const uBody = uRes?.data ?? uRes;
+        const uList = unwrapList(uBody);
+
+        if (!alive) return;
+        setProperties(pList);
+        setUnits(uList);
+
+        // If no selection yet, default to first property (and set form too)
+        if (!selectedPropertyId && pList.length > 0) {
+          const pid = String(pList[0].id);
+          setSelectedPropertyId(pid);
+          setForm((f) => ({ ...f, property_id: pid }));
+        }
+      } catch (e) {
+        if (!alive) return;
+        setError(e?.message || "Failed to load units.");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }
+
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [unitsUrl]);
+
+  const propertyNameById = useMemo(() => {
+    const m = new Map();
+    (properties || []).forEach((p) => m.set(String(p.id), p.name || `Property ${p.id}`));
+    return m;
+  }, [properties]);
+
+  function onPickProperty(e) {
+    const pid = e.target.value;
+    setSelectedPropertyId(pid);
+    setForm((f) => ({ ...f, property_id: pid }));
+  }
+
+  function onFormChange(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  async function createUnit(e) {
+    e.preventDefault();
+    setError("");
+
+    const payload = {
+      property_id: form.property_id ? Number(form.property_id) : null,
+      label: String(form.label || "").trim(),
+      beds: form.beds === "" ? null : Number(form.beds),
+      baths: form.baths === "" ? null : Number(form.baths),
+      monthly_rent: form.monthly_rent === "" ? null : Number(form.monthly_rent),
+      status: String(form.status || "vacant"),
+      notes: String(form.notes || ""),
+    };
+
+    if (!payload.property_id || !payload.label) {
+      setError("Property and Unit label are required.");
+      return;
+    }
+
+    try {
+      await api.post("/units", payload);
+      setFormOpen(false);
+      setForm((f) => ({ ...f, label: "", beds: "", baths: "", monthly_rent: "", notes: "" }));
+
+      // reload units
+      const uRes = await api.get(unitsUrl);
+      const uBody = uRes?.data ?? uRes;
+      setUnits(unwrapList(uBody));
+    } catch (e2) {
+      setError(e2?.response?.data?.detail || e2?.message || "Failed to create unit.");
+    }
+  }
+
+  const styles = {
+    page: { padding: 18, maxWidth: 1100 },
+    header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 },
+    h1: { fontSize: 22, fontWeight: 800, margin: 0 },
+    card: { border: "1px solid #e6e6e6", borderRadius: 14, background: "white", overflow: "hidden" },
+    row: { padding: 12, borderBottom: "1px solid #f0f0f0", display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" },
+    meta: { fontSize: 13, opacity: 0.75, marginTop: 2 },
+    btn: { border: "1px solid #ddd", borderRadius: 10, padding: "8px 10px", background: "#fff", cursor: "pointer" },
+    btnDark: { border: "none", borderRadius: 10, padding: "10px 12px", background: "#111", color: "#fff", cursor: "pointer" },
+    select: { border: "1px solid #ddd", borderRadius: 10, padding: "10px 10px", background: "#fff", minWidth: 240 },
+    input: { border: "1px solid #ddd", borderRadius: 10, padding: "10px 10px", background: "#fff", width: "100%" },
+    grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
+    modalBackdrop: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "grid", placeItems: "center", padding: 16 },
+    modal: { width: "min(680px, 100%)", borderRadius: 16, background: "#fff", border: "1px solid #e6e6e6", padding: 14 },
+  };
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.header}>
+        <div>
+          <h1 style={styles.h1}>Units</h1>
+          <div style={{ fontSize: 13, opacity: 0.75 }}>Manage units and jump to tenants.</div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <select style={styles.select} value={selectedPropertyId} onChange={onPickProperty}>
+            <option value="">All properties</option>
+            {(properties || []).map((p) => (
+              <option key={p.id} value={String(p.id)}>
+                {p.name || `Property ${p.id}`}
+              </option>
+            ))}
+          </select>
+
+          <button style={styles.btnDark} onClick={() => setFormOpen(true)}>
+            + New Unit
+          </button>
+        </div>
+      </div>
+
+      {error ? (
+        <div style={{ padding: 10, borderRadius: 10, background: "#ffecec", border: "1px solid #ffb3b3", marginBottom: 12 }}>
+          {error}
+        </div>
+      ) : null}
+
+      <div style={styles.card}>
+        {loading ? (
+          <div style={{ padding: 14, opacity: 0.7 }}>Loading...</div>
+        ) : units.length === 0 ? (
+          <div style={{ padding: 14, opacity: 0.7 }}>No units yet.</div>
+        ) : (
+          units.map((u) => {
+            const label = u.label || u.unit_number || u.name || "Unit";
+            const details = [
+              u.beds != null ? `${u.beds} bd` : null,
+              u.baths != null ? `${u.baths} ba` : null,
+              u.monthly_rent != null ? `$${Number(u.monthly_rent).toFixed(0)}/mo` : null,
+              u.status ? String(u.status) : null,
+            ].filter(Boolean);
+
+            const pid = u.property_id != null ? String(u.property_id) : "";
+            const propName = pid ? (propertyNameById.get(pid) || `Property ${pid}`) : "—";
+
+            return (
+              <div key={u.id} style={styles.row}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 750 }}>{label}</div>
+                  <div style={styles.meta}>
+                    {propName}
+                    {details.length ? ` • ${details.join(" • ")}` : ""}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button
+                    style={styles.btn}
+                    onClick={() => navigate(`/tenants?unit_id=${encodeURIComponent(String(u.id))}`)}
+                  >
+                    Tenants
+                  </button>
+                  <button
+                    style={styles.btn}
+                    onClick={() => navigate(`/leases?unit_id=${encodeURIComponent(String(u.id))}`)}
+                  >
+                    Leases
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {formOpen ? (
+        <div style={styles.modalBackdrop} onClick={() => setFormOpen(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>New Unit</div>
+              <button style={styles.btn} onClick={() => setFormOpen(false)}>Close</button>
+            </div>
+
+            <form onSubmit={createUnit} style={{ display: "grid", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Property</div>
+                <select style={styles.input} value={form.property_id} onChange={(e) => onFormChange("property_id", e.target.value)}>
+                  <option value="">Select property…</option>
+                  {(properties || []).map((p) => (
+                    <option key={p.id} value={String(p.id)}>
+                      {p.name || `Property ${p.id}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={styles.grid}>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Unit label</div>
+                  <input style={styles.input} value={form.label} onChange={(e) => onFormChange("label", e.target.value)} placeholder="e.g. Unit 1 / Apt A" />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Status</div>
+                  <select style={styles.input} value={form.status} onChange={(e) => onFormChange("status", e.target.value)}>
+                    <option value="vacant">vacant</option>
+                    <option value="occupied">occupied</option>
+                    <option value="offline">offline</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={styles.grid}>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Beds</div>
+                  <input type="number" step="1" style={styles.input} value={form.beds} onChange={(e) => onFormChange("beds", e.target.value)} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Baths</div>
+                  <input type="number" step="0.5" style={styles.input} value={form.baths} onChange={(e) => onFormChange("baths", e.target.value)} />
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Monthly rent</div>
+                <input type="number" step="0.01" style={styles.input} value={form.monthly_rent} onChange={(e) => onFormChange("monthly_rent", e.target.value)} />
+              </div>
+
+              <div>
+                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Notes</div>
+                <input style={styles.input} value={form.notes} onChange={(e) => onFormChange("notes", e.target.value)} />
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button type="button" style={styles.btn} onClick={() => setFormOpen(false)}>Cancel</button>
+                <button type="submit" style={styles.btnDark}>Create Unit</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

@@ -1,0 +1,31 @@
+﻿/* src/index.css - force readable colors */
+
+:root { color-scheme: light; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: #f8fafc;
+  color: #0f172a !important;   /* <-- fixes white text */
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+/* Make common elements readable even if other CSS tries to override */
+* { color: inherit; }
+
+a { color: #2563eb; }
+a:hover { text-decoration: underline; }
+
+input, select, textarea, button {
+  color: #0f172a !important;
+}
+
+::placeholder {
+  color: #64748b;
+}
+
+/* If a container sets a dark background, ensure its text is light */
+.bg-slate-900, .bg-gray-900, .bg-black {
+  color: #f8fafc !important;
+}

@@ -1,0 +1,182 @@
+﻿from __future__ import annotations
+
+from datetime import datetime
+from sqlalchemy import (
+    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float
+)
+from sqlalchemy.orm import relationship
+
+from app.saas.db import Base
+
+class Organization(Base):
+    __tablename__ = "saas_organizations"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    users = relationship("User", back_populates="org", cascade="all, delete-orphan")
+
+class User(Base):
+    __tablename__ = "saas_users"
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, ForeignKey("saas_organizations.id"), nullable=False, index=True)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    invite_token = Column(String(120), nullable=True, index=True)
+    invite_expires_at = Column(DateTime, nullable=True)
+    invited_at = Column(DateTime, nullable=True)
+
+    role = Column(String(30), nullable=False, default="owner")  # owner|manager|staff|tenant|superadmin
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    org = relationship("Organization", back_populates="users")
+
+class Subscription(Base):
+    __tablename__ = "saas_subscriptions"
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, ForeignKey("saas_organizations.id"), nullable=False, unique=True, index=True)
+
+    plan_type = Column(String(20), nullable=False, default="per_unit")  # per_unit|per_tenant
+    status = Column(String(30), nullable=False, default="trialing")  # trialing|active|past_due|canceled
+
+    stripe_customer_id = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
+    stripe_item_id = Column(String(255), nullable=True)
+
+    trial_ends_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class Property(Base):
+    __tablename__ = "saas_properties"
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, index=True, nullable=False)
+
+    name = Column(String(255), nullable=False)
+    address1 = Column(String(255), nullable=False)
+    address2 = Column(String(255), nullable=True)
+    city = Column(String(100), nullable=False)
+    state = Column(String(20), nullable=False)
+    zip = Column(String(20), nullable=False)
+    notes = Column(Text, nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class Unit(Base):
+    __tablename__ = "saas_units"
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, index=True, nullable=False)
+
+    property_id = Column(Integer, ForeignKey("saas_properties.id"), nullable=False, index=True)
+    unit_number = Column(String(50), nullable=False)
+
+    bedrooms = Column(Integer, nullable=True)
+    bathrooms = Column(Float, nullable=True)
+    sq_ft = Column(Integer, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class Tenant(Base):
+    __tablename__ = "saas_tenants"
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, index=True, nullable=False)
+
+    first_name = Column(String(80), nullable=False)
+    last_name = Column(String(80), nullable=False)
+    email = Column(String(255), nullable=True)
+    phone = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    # optional link to a tenant login user
+    user_id = Column(Integer, ForeignKey("saas_users.id"), nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class Lease(Base):
+    __tablename__ = "saas_leases"
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, index=True, nullable=False)
+
+    unit_id = Column(Integer, ForeignKey("saas_units.id"), nullable=False, index=True)
+    tenant_id = Column(Integer, ForeignKey("saas_tenants.id"), nullable=True, index=True)
+
+    monthly_rent = Column(Float, nullable=False)
+    start_date = Column(String(20), nullable=True)
+    end_date = Column(String(20), nullable=True)
+    security_deposit = Column(Float, nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class Payment(Base):
+    __tablename__ = "saas_payments"
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, index=True, nullable=False)
+
+    lease_id = Column(Integer, ForeignKey("saas_leases.id"), nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+    payment_date = Column(String(20), nullable=False)
+    method = Column(String(40), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    status = Column(String(30), nullable=False, default="completed")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class MaintenanceRequest(Base):
+    __tablename__ = "maintenance_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, index=True, nullable=False)
+
+    tenant_id = Column(Integer, index=True, nullable=False)
+    unit_id = Column(Integer, index=True, nullable=True)
+
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+
+    priority = Column(String(20), nullable=False, default="normal")  # low|normal|high|urgent
+    status = Column(String(20), nullable=False, default="open")      # open|in_progress|resolved|closed
+
+    landlord_notes = Column(Text, nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BillingSettings(Base):
+    __tablename__ = "billing_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, index=True, nullable=False)
+
+    # per_unit | per_tenant | flat
+    plan_type = Column(String(20), nullable=False, default="per_unit")
+    currency = Column(String(10), nullable=False, default="USD")
+
+    unit_price_cents = Column(Integer, nullable=False, default=500)     # $5.00
+    tenant_price_cents = Column(Integer, nullable=False, default=300)   # $3.00
+    flat_price_cents = Column(Integer, nullable=False, default=0)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+class StripeOrg(Base):
+    __tablename__ = "stripe_orgs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, index=True, nullable=False, unique=True)
+
+    stripe_customer_id = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
+    stripe_subscription_item_id = Column(String(255), nullable=True)
+
+    plan_type = Column(String(20), nullable=True)   # per_unit|per_tenant|flat
+    status = Column(String(50), nullable=True)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+

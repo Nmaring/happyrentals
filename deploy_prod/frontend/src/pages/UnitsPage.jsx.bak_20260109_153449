@@ -1,0 +1,150 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import api from "../api.js";
+
+function unwrapList(res) {
+  const data = res?.data ?? res;
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.value)) return data.value; // backend returns { value: [...], Count: n }
+  if (data && Array.isArray(data.items)) return data.items;
+  if (data && Array.isArray(data.results)) return data.results;
+  return [];
+}
+
+export default function UnitsPage() {
+  const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const qpPropertyId = searchParams.get("property_id") || "";
+  const [propertyId, setPropertyId] = useState(qpPropertyId);
+
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const unitsUrl = useMemo(() => {
+    return propertyId
+      ? `/units?property_id=${encodeURIComponent(propertyId)}`
+      : "/units";
+  }, [propertyId]);
+
+  // keep URL in sync when dropdown changes
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (propertyId) next.set("property_id", String(propertyId));
+    else next.delete("property_id");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyId]);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const [pRes, uRes] = await Promise.all([
+        api.get("/properties"),
+        api.get(unitsUrl),
+      ]);
+      const pList = unwrapList(pRes);
+      const uList = unwrapList(uRes);
+      setProperties(pList);
+      setUnits(uList);
+    } catch (e) {
+      setError(e?.response?.data?.detail || e?.message || "Failed to load units.");
+      setUnits([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); }, [unitsUrl]);
+
+  const propertyNameById = useMemo(() => {
+    const m = {};
+    (properties || []).forEach((p) => { m[String(p.id)] = p.name || `Property ${p.id}`; });
+    return m;
+  }, [properties]);
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Units</div>
+          <div style={styles.sub}>Filter by property and jump to leases/tenants.</div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <select style={styles.select} value={propertyId} onChange={(e) => setPropertyId(e.target.value)}>
+            <option value="">All properties</option>
+            {(properties || []).map((p) => (
+              <option key={p.id} value={String(p.id)}>{p.name || `Property ${p.id}`}</option>
+            ))}
+          </select>
+          <button type="button" style={styles.btn} onClick={load}>Refresh</button>
+        </div>
+      </div>
+
+      {error ? <div style={styles.err}>{error}</div> : null}
+
+      <div style={styles.card}>
+        <div style={styles.tableHead}>
+          <div style={{ fontWeight: 800 }}>Unit</div>
+          <div style={{ fontWeight: 800 }}>Property</div>
+          <div style={{ fontWeight: 800 }}>Details</div>
+          <div style={{ fontWeight: 800, textAlign: "right" }}>Actions</div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>Loading…</div>
+        ) : units.length === 0 ? (
+          <div style={{ padding: 14, opacity: 0.75 }}>No units found.</div>
+        ) : (
+          units.map((u) => {
+            const label = u.label || u.unit_number || u.name || `Unit ${u.id}`;
+            const pid = u.property_id != null ? String(u.property_id) : "";
+            const propName = pid ? (propertyNameById[pid] || `Property ${pid}`) : "—";
+            const details = [
+              (u.beds != null ? `${u.beds} bd` : null),
+              (u.baths != null ? `${u.baths} ba` : null),
+              (u.monthly_rent != null ? `$${Number(u.monthly_rent).toFixed(0)}/mo` : null),
+              (u.status ? String(u.status) : null),
+            ].filter(Boolean).join(" • ");
+
+            return (
+              <div key={u.id} style={styles.row}>
+                <div style={{ fontWeight: 750 }}>{label}</div>
+                <div style={{ opacity: 0.8 }}>{propName}</div>
+                <div style={{ opacity: 0.8 }}>{details || "—"}</div>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                  <button type="button" style={styles.btnGhost} onClick={() => nav(`/tenants?unit_id=${encodeURIComponent(String(u.id))}`)}>
+                    Tenants
+                  </button>
+                  <button type="button" style={styles.btnGhost} onClick={() => nav(`/leases?unit_id=${encodeURIComponent(String(u.id))}`)}>
+                    Leases
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: 18, display: "grid", gap: 14 },
+  headerRow: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 },
+  h1: { fontSize: 26, fontWeight: 900, letterSpacing: -0.3 },
+  sub: { color: "#475569", marginTop: 4 },
+  err: { background: "#fff1f2", border: "1px solid #fecdd3", color: "#9f1239", padding: 10, borderRadius: 12 },
+
+  card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden" },
+  tableHead: { display: "grid", gridTemplateColumns: "1.4fr 1.6fr 2fr 1.6fr", gap: 10, padding: 12, borderBottom: "1px solid #e5e7eb", background: "#fafafa" },
+  row: { display: "grid", gridTemplateColumns: "1.4fr 1.6fr 2fr 1.6fr", gap: 10, padding: 12, borderBottom: "1px solid #f1f5f9", alignItems: "center" },
+
+  btn: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  btnGhost: { padding: "8px 10px", borderRadius: 10, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  select: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", minWidth: 240 },
+};

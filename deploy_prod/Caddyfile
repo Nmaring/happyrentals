@@ -1,0 +1,7 @@
+﻿happyrentals.me {
+  reverse_proxy app:8000
+}
+
+www.happyrentals.me {
+  redir https://happyrentals.me{uri}
+}

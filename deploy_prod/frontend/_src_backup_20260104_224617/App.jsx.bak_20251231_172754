@@ -1,0 +1,30 @@
+// frontend/src/App.jsx
+import React from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+
+import PropertiesPage from "./pages/PropertiesPage";
+
+// If these pages exist in your app, import them; otherwise remove lines.
+import UnitsPage from "./pages/UnitsPage";
+import TenantsPage from "./pages/TenantsPage";
+
+// If you have a layout with sidebar/topbar, import it; otherwise this is a basic shell.
+import AppLayout from "./components/AppLayout";
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AppLayout>
+        <Routes>
+          <Route path="/" element={<Navigate to="/properties" replace />} />
+
+          <Route path="/properties" element={<PropertiesPage />} />
+          <Route path="/units" element={<UnitsPage />} />
+          <Route path="/tenants" element={<TenantsPage />} />
+
+          <Route path="*" element={<div className="p-6">Not found</div>} />
+        </Routes>
+      </AppLayout>
+    </BrowserRouter>
+  );
+}

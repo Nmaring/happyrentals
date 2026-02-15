@@ -1,0 +1,17 @@
+﻿import React from "react";
+import { useLocation } from "react-router-dom";
+
+export default function UnitsPage() {
+  const loc = useLocation();
+  return (
+    <div style={{ padding: 18 }}>
+      <div style={{ fontSize: 26, fontWeight: 900 }}>UnitsPage OK</div>
+      <div style={{ marginTop: 8, opacity: 0.75, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+        {loc.pathname}{loc.search}
+      </div>
+      <div style={{ marginTop: 12 }}>
+        If you can see this, routing works and the previous UnitsPage was crashing at runtime.
+      </div>
+    </div>
+  );
+}

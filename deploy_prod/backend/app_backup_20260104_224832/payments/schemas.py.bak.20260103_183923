@@ -1,0 +1,67 @@
+﻿# backend/app/payments/schemas.py
+from datetime import date
+from typing import Optional, Literal
+from pydantic import BaseModel, Field
+
+PaymentMethod = Literal[
+    "cash",
+    "check",
+    "money_order",
+    "ach",
+    "card",
+    "venmo",
+    "cashapp",
+    "apple_pay",
+    "google_pay",
+    "zelle",
+    "paypal",
+    "other",
+]
+
+PaymentStatus = Literal["received", "pending", "failed", "refunded"]
+
+class PaymentCreate(BaseModel):
+    lease_id: Optional[int] = None
+    tenant_id: Optional[int] = None
+    unit_id: Optional[int] = None
+
+    amount: float = 0
+    payment_date: date = Field(default_factory=date.today)
+
+    method: PaymentMethod = "cash"
+    channel: Optional[str] = None
+    processor: Optional[str] = None
+    external_reference: Optional[str] = None
+
+    status: PaymentStatus = "received"
+    notes: Optional[str] = None
+
+class PaymentUpdate(BaseModel):
+    lease_id: Optional[int] = None
+    tenant_id: Optional[int] = None
+    unit_id: Optional[int] = None
+
+    amount: Optional[float] = None
+    payment_date: Optional[date] = None
+
+    method: Optional[PaymentMethod] = None
+    channel: Optional[str] = None
+    processor: Optional[str] = None
+    external_reference: Optional[str] = None
+
+    status: Optional[PaymentStatus] = None
+    notes: Optional[str] = None
+
+class PaymentOut(BaseModel):
+    id: int
+    lease_id: Optional[int]
+    tenant_id: Optional[int]
+    unit_id: Optional[int]
+    amount: float
+    payment_date: date
+    method: PaymentMethod
+    channel: Optional[str]
+    processor: Optional[str]
+    external_reference: Optional[str]
+    status: PaymentStatus
+    notes: Optional[str] = None

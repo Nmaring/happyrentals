@@ -1,0 +1,339 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api";
+
+function isoToday() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+function isoAddMonths(startIso, months) {
+  const d = new Date(startIso + "T00:00:00");
+  d.setMonth(d.getMonth() + months);
+  return d.toISOString().slice(0, 10);
+}
+
+function Modal({ title, open, onClose, children }) {
+  if (!open) return null;
+  return (
+    <div style={styles.overlay} onMouseDown={onClose}>
+      <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={{ fontWeight: 800, fontSize: 18 }}>{title}</div>
+          <button style={styles.btnGhost} onClick={onClose}>✕</button>
+        </div>
+        <div style={styles.modalBody}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+export default function LeasesPage() {
+  
+  const [searchParams] = useSearchParams();
+  const qpUnitId = searchParams.get("unit_id");
+  const qpTenantId = searchParams.get("tenant_id");
+const [leases, setLeases] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [tenants, setTenants] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(() => ({
+    tenant_id: "",
+    unit_id: "",
+    state: "MN",
+    lease_type: "fixed_term", // fixed_term | month_to_month | open_ended
+    term_months: 12,
+    start_date: isoToday(),
+    end_date: isoAddMonths(isoToday(), 12),
+    monthly_rent: 1500,
+    security_deposit: 1500,
+    rent_due_day: 1,
+    status: "active",
+    notes: "",
+  }));
+
+  async function refreshAll() {
+    setLoading(true);
+    setErr("");
+    try {
+      const [l, u, t] = await Promise.all([
+        api.get((qpTenantId||qpUnitId) ? `/leases?${qpTenantId?`tenant_id=${qpTenantId}`:""}${(qpTenantId&&qpUnitId)?"&":""}${qpUnitId?`unit_id=${qpUnitId}`:""}` : "/leases"),
+        api.get("/units"),
+        api.get("/tenants"),
+      ]);
+      setLeases(Array.isArray(l.data) ? l.data : []);
+      setUnits(Array.isArray(u.data) ? u.data : []);
+      setTenants(Array.isArray(t.data) ? t.data : []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { refreshAll(); }, []);
+
+  const unitOptions = useMemo(() => {
+    return (units || []).map((u) => ({
+      id: u.id,
+      label: `${u.label || "Unit"} (Beds ${u.bedrooms ?? "?"} / Baths ${u.bathrooms ?? "?"} / ${u.sqft ?? "?"} sqft)`,
+    }));
+  }, [units]);
+
+  const tenantOptions = useMemo(() => {
+    return (tenants || []).map((t) => ({
+      id: t.id,
+      label: `${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || `Tenant ${t.id}`,
+    }));
+  }, [tenants]);
+
+  function openCreate() {
+    const today = isoToday();
+    setErr("");
+    setForm({
+      tenant_id: qpTenantId ?? (tenantOptions[0]?.id ?? ""),
+      unit_id: qpUnitId ?? (unitOptions[0]?.id ?? ""),
+      state: "MN",
+      lease_type: "fixed_term",
+      term_months: 12,
+      start_date: today,
+      end_date: isoAddMonths(today, 12),
+      monthly_rent: 1500,
+      security_deposit: 1500,
+      rent_due_day: 1,
+      status: "active",
+      notes: "",
+    });
+    setOpen(true);
+  }
+
+  function onChange(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  function onLeaseTypeChange(nextType) {
+    const start = form.start_date || isoToday();
+    if (nextType === "fixed_term") {
+      onChange("lease_type", nextType);
+      onChange("term_months", 12);
+      onChange("end_date", isoAddMonths(start, 12));
+    } else {
+      onChange("lease_type", nextType);
+      onChange("term_months", null);
+      onChange("end_date", "");
+    }
+  }
+
+  async function createLease(e) {
+    e?.preventDefault?.();
+    setErr("");
+    try {
+      const payload = {
+        tenant_id: Number(form.tenant_id),
+        unit_id: Number(form.unit_id),
+        state: form.state || "MN",
+        lease_type: form.lease_type,
+        term_months: form.lease_type === "fixed_term" ? Number(form.term_months || 12) : null,
+        start_date: form.start_date,
+        end_date: form.end_date ? form.end_date : null,
+        monthly_rent: Number(form.monthly_rent || 0),
+        security_deposit: form.security_deposit === "" || form.security_deposit === null ? null : Number(form.security_deposit),
+        rent_due_day: Number(form.rent_due_day || 1),
+        status: form.status || "active",
+        notes: form.notes || "",
+        clauses_json: {}, // backend expects object; safe default
+      };
+
+      if (!payload.tenant_id || !payload.unit_id || !payload.start_date) {
+        setErr("Tenant, Unit, and Start Date are required.");
+        return;
+      }
+
+      await api.post("/leases", payload);
+      setOpen(false);
+      await refreshAll();
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || e2.message || "Create lease failed");
+    }
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Leases</div>
+          <div style={styles.sub}>Create and view leases.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.btn} onClick={refreshAll} disabled={loading}>
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+          <button style={styles.btnPrimary} onClick={openCreate}>
+            New Lease
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={styles.err}>{err}</div> : null}
+
+      <div style={styles.card}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>ID</th>
+              <th style={styles.th}>Tenant</th>
+              <th style={styles.th}>Unit</th>
+              <th style={styles.th}>State</th>
+              <th style={styles.th}>Type</th>
+              <th style={styles.th}>Start</th>
+              <th style={styles.th}>End</th>
+              <th style={styles.thRight}>Rent</th>
+              <th style={styles.th}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(!leases || leases.length === 0) ? (
+              <tr><td colSpan={9} style={styles.tdEmpty}>No leases yet.</td></tr>
+            ) : leases.map((l) => {
+              const tenant = (tenants || []).find((t) => String(t.id) === String(l.tenant_id));
+              const unit = (units || []).find((u) => String(u.id) === String(l.unit_id));
+              return (
+                <tr key={l.id}>
+                  <td style={styles.td}>{l.id}</td>
+                  <td style={styles.td}>{tenant ? `${tenant.first_name} ${tenant.last_name}` : `Tenant ${l.tenant_id}`}</td>
+                  <td style={styles.td}>{unit ? (unit.label || `Unit ${l.unit_id}`) : `Unit ${l.unit_id}`}</td>
+                  <td style={styles.td}>{l.state}</td>
+                  <td style={styles.td}>{l.lease_type}</td>
+                  <td style={styles.td}>{l.start_date ?? ""}</td>
+                  <td style={styles.td}>{l.end_date ?? ""}</td>
+                  <td style={styles.tdRight}>${Number(l.monthly_rent || 0).toFixed(2)}</td>
+                  <td style={styles.td}>{l.status}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <Modal title="Create Lease" open={open} onClose={() => setOpen(false)}>
+        <form onSubmit={createLease}>
+          <div style={styles.grid2}>
+            <div>
+              <label style={styles.label}>Tenant</label>
+              <select style={styles.input} value={form.tenant_id} onChange={(e) => onChange("tenant_id", e.target.value)}>
+                <option value="">— Select —</option>
+                {tenantOptions.map((t) => (
+                  <option key={t.id} value={t.id}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label style={styles.label}>Unit</label>
+              <select style={styles.input} value={form.unit_id} onChange={(e) => onChange("unit_id", e.target.value)}>
+                <option value="">— Select —</option>
+                {unitOptions.map((u) => (
+                  <option key={u.id} value={u.id}>{u.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label style={styles.label}>State</label>
+              <input style={styles.input} value={form.state} onChange={(e) => onChange("state", e.target.value.toUpperCase().slice(0, 2))} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Lease Type</label>
+              <select style={styles.input} value={form.lease_type} onChange={(e) => onLeaseTypeChange(e.target.value)}>
+                <option value="fixed_term">Fixed Term</option>
+                <option value="month_to_month">Month-to-Month</option>
+                <option value="open_ended">Open-ended</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={styles.label}>Start Date</label>
+              <input type="date" style={styles.input} value={form.start_date} onChange={(e) => {
+                const v = e.target.value;
+                onChange("start_date", v);
+                if (form.lease_type === "fixed_term") onChange("end_date", isoAddMonths(v, Number(form.term_months || 12)));
+              }} />
+            </div>
+
+            <div>
+              <label style={styles.label}>End Date</label>
+              <input type="date" style={styles.input} value={form.end_date || ""} onChange={(e) => onChange("end_date", e.target.value)} disabled={form.lease_type !== "fixed_term"} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Monthly Rent</label>
+              <input type="number" step="0.01" style={styles.input} value={form.monthly_rent} onChange={(e) => onChange("monthly_rent", e.target.value)} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Security Deposit</label>
+              <input type="number" step="0.01" style={styles.input} value={form.security_deposit} onChange={(e) => onChange("security_deposit", e.target.value)} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Rent Due Day</label>
+              <input type="number" min="1" max="28" style={styles.input} value={form.rent_due_day} onChange={(e) => onChange("rent_due_day", e.target.value)} />
+            </div>
+
+            <div>
+              <label style={styles.label}>Status</label>
+              <select style={styles.input} value={form.status} onChange={(e) => onChange("status", e.target.value)}>
+                <option value="draft">draft</option>
+                <option value="active">active</option>
+                <option value="ended">ended</option>
+                <option value="terminated">terminated</option>
+              </select>
+            </div>
+
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label style={styles.label}>Notes</label>
+              <textarea style={{ ...styles.input, height: 80 }} value={form.notes} onChange={(e) => onChange("notes", e.target.value)} />
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 14 }}>
+            <button type="button" style={styles.btn} onClick={() => setOpen(false)}>Cancel</button>
+            <button type="submit" style={styles.btnPrimary}>Create</button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+}
+
+const styles = {
+  page: { padding: 18, display: "grid", gap: 14 },
+  headerRow: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 },
+  h1: { fontSize: 26, fontWeight: 900, letterSpacing: -0.3 },
+  sub: { color: "#475569", marginTop: 4 },
+  err: { background: "#fff1f2", border: "1px solid #fecdd3", color: "#9f1239", padding: 10, borderRadius: 12 },
+  card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "left", padding: 10, fontSize: 12, color: "#475569", borderBottom: "1px solid #e5e7eb" },
+  thRight: { textAlign: "right", padding: 10, fontSize: 12, color: "#475569", borderBottom: "1px solid #e5e7eb" },
+  td: { padding: 10, borderBottom: "1px solid #f1f5f9", fontSize: 13 },
+  tdRight: { padding: 10, borderBottom: "1px solid #f1f5f9", fontSize: 13, textAlign: "right" },
+  tdEmpty: { padding: 16, color: "#475569" },
+  btn: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  btnPrimary: { padding: "10px 12px", borderRadius: 12, border: "1px solid #1d4ed8", background: "#2563eb", color: "white", cursor: "pointer" },
+  btnGhost: { padding: "6px 10px", borderRadius: 10, border: "1px solid #e5e7eb", background: "white", cursor: "pointer" },
+  label: { display: "block", fontSize: 12, fontWeight: 700, marginBottom: 6, color: "#334155" },
+  input: { width: "100%", padding: 10, borderRadius: 12, border: "1px solid #e5e7eb", outline: "none" },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
+  modal: { width: "min(920px, 100%)", background: "white", borderRadius: 18, border: "1px solid #e5e7eb", overflow: "hidden" },
+  modalHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: 12, borderBottom: "1px solid #e5e7eb" },
+  modalBody: { padding: 12 },
+};
+
+
+
+
+

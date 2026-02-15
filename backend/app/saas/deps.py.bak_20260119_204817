@@ -1,0 +1,85 @@
+﻿from __future__ import annotations
+
+from datetime import datetime
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
+
+from app.saas.db import get_db
+from app.saas.auth import decode_token
+from app.saas import models
+
+bearer = HTTPBearer(auto_error=False)
+COOKIE_NAME = "hr_token"
+
+def get_current_user(
+    request: Request,
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+    db: Session = Depends(get_db),
+):
+    token = None
+    if creds and creds.credentials:
+        token = creds.credentials
+    else:
+        token = request.cookies.get(COOKIE_NAME)
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        data = decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    user = db.query(models.User).filter(models.User.id == int(data["sub"])).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return user
+
+def org_id(user=Depends(get_current_user)) -> int:
+    return int(user.org_id)
+
+def _get_sub(db: Session, oid: int) -> models.Subscription | None:
+    return db.query(models.Subscription).filter(models.Subscription.org_id == oid).first()
+
+def _enforce_trial_expiry(db: Session, sub: models.Subscription) -> None:
+    if sub.status == "trialing" and sub.trial_ends_at and datetime.utcnow() > sub.trial_ends_at:
+        sub.status = "past_due"
+        db.commit()
+
+def require_subscription_read(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    # allow superadmin always
+    if user.role == "superadmin":
+        return user
+
+    sub = _get_sub(db, user.org_id)
+    if not sub:
+        # allow reading but show banner in UI
+        return user
+
+    _enforce_trial_expiry(db, sub)
+    return user
+
+def require_subscription_write(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.role == "superadmin":
+        return user
+
+    sub = _get_sub(db, user.org_id)
+    if not sub:
+        raise HTTPException(status_code=402, detail="No subscription (trial not configured)")
+
+    _enforce_trial_expiry(db, sub)
+
+    if sub.status not in ("trialing", "active"):
+        raise HTTPException(status_code=402, detail=f"Subscription not active: {sub.status}")
+
+    return user
+
+def require_roles(*roles: str):
+    def _dep(user=Depends(get_current_user)):
+        if user.role == "superadmin":
+            return user
+        if roles and user.role not in roles:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return user
+    return _dep

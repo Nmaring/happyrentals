@@ -1,0 +1,453 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api.js";
+
+function yyyyMmDd(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export default function LeasesPage() {
+  const [tenants, setTenants] = useState([]);
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [leases, setLeases] = useState([]);
+
+  const [selectedPropertyId, setSelectedPropertyId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const [showModal, setShowModal] = useState(false);
+  const [rules, setRules] = useState(null);
+  const [rulesErr, setRulesErr] = useState("");
+
+  const today = useMemo(() => new Date(), []);
+  const defaultStart = useMemo(() => yyyyMmDd(today), [today]);
+
+  const [form, setForm] = useState({
+    tenant_id: "",
+    unit_id: "",
+    state: "MN",
+    lease_type: "fixed_term",     // fixed_term | month_to_month | open_ended
+    term_months: 12,
+    start_date: defaultStart,     // backend also defaults, but we keep UX clean
+    monthly_rent: "",
+    security_deposit: "",
+    rent_due_day: 1,
+    status: "active",
+    // basic clause toggles (saved as JSON via backend)
+    clauses: {
+      late_fee: false,
+      pets: false,
+      smoking: false,
+      renters_insurance: false,
+      utilities: false,
+      parking: false,
+    },
+  });
+
+  async function loadAll() {
+    setErr("");
+    setLoading(true);
+    try {
+      const [tRes, pRes, uRes, lRes] = await Promise.all([
+        api.get("/tenants"),
+        api.get("/properties"),
+        api.get("/units"),
+        api.get("/leases"),
+      ]);
+      setTenants(tRes.data || []);
+      setProperties(pRes.data || []);
+      setUnits(uRes.data || []);
+      setLeases(lRes.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load leases data");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAll();
+  }, []);
+
+  const tenantById = useMemo(() => {
+    const m = new Map();
+    (Array.isArray(tenants) ? tenants : []).forEach((t) => m.set(Number(t.id), t));
+    return m;
+  }, [tenants]);
+
+  const unitById = useMemo(() => {
+    const m = new Map();
+    (Array.isArray(units) ? units : []).forEach((u) => m.set(Number(u.id), u));
+    return m;
+  }, [units]);
+
+  const filteredUnits = useMemo(() => {
+    const arr = Array.isArray(units) ? units : [];
+    if (!selectedPropertyId) return arr;
+    const pid = Number(selectedPropertyId);
+    return arr.filter((u) => Number(u.property_id) === pid);
+  }, [units, selectedPropertyId]);
+
+  const filteredLeases = useMemo(() => {
+    const arr = Array.isArray(leases) ? leases : [];
+    if (!selectedPropertyId) return arr;
+    const pid = Number(selectedPropertyId);
+    return arr.filter((l) => {
+      const u = unitById.get(Number(l.unit_id));
+      return u && Number(u.property_id) === pid;
+    });
+  }, [leases, selectedPropertyId, unitById]);
+
+  async function loadRules(stateCode) {
+    setRulesErr("");
+    try {
+      const res = await api.get(`/lease-builder/rules/${stateCode}`);
+      setRules(res.data);
+    } catch (e) {
+      setRules(null);
+      setRulesErr(e?.response?.data?.detail || e.message || "Could not load state rules");
+    }
+  }
+
+  function openCreate() {
+    setShowModal(true);
+    loadRules((form.state || "MN").toUpperCase());
+  }
+
+  async function createLease(e) {
+    e.preventDefault();
+    setErr("");
+
+    const payload = {
+      tenant_id: Number(form.tenant_id),
+      unit_id: Number(form.unit_id),
+      state: (form.state || "MN").toUpperCase(),
+      lease_type: form.lease_type,
+      term_months: form.lease_type === "fixed_term" ? Number(form.term_months || 12) : null,
+      start_date: (form.start_date || "").trim() || defaultStart,
+      // IMPORTANT: do NOT send end_date; backend auto-sets based on lease_type/term
+      monthly_rent: form.monthly_rent === "" ? 0 : Number(form.monthly_rent),
+      security_deposit: form.security_deposit === "" ? null : Number(form.security_deposit),
+      rent_due_day: Number(form.rent_due_day || 1),
+      status: (form.status || "").trim() || "active",
+      clauses: form.clauses || {},
+    };
+
+    setLoading(true);
+    try {
+      await api.post("/leases", payload);
+      await loadAll();
+      setShowModal(false);
+      setForm((f) => ({ ...f, monthly_rent: "", security_deposit: "" }));
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to create lease");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <h2 style={{ margin: 0 }}>Leases</h2>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={loadAll} disabled={loading} style={buttonStyle}>
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+          <button onClick={openCreate} style={buttonStyle}>
+            + New Lease
+          </button>
+        </div>
+      </div>
+
+      {err ? <div style={alertStyle}>{typeof err === "string" ? err : JSON.stringify(err)}</div> : null}
+
+      <div style={{ marginTop: 12, ...cardStyle }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>Filter by Property</div>
+        <select value={selectedPropertyId} onChange={(e) => setSelectedPropertyId(e.target.value)} style={inputStyle}>
+          <option value="">All properties…</option>
+          {(Array.isArray(properties) ? properties : []).map((p) => (
+            <option key={p.id} value={p.id}>{p.name} (#{p.id})</option>
+          ))}
+        </select>
+      </div>
+
+      <section style={{ marginTop: 12, ...cardStyle }}>
+        <div style={{ fontWeight: 700, marginBottom: 10 }}>Leases</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["ID", "Tenant", "Unit", "State", "Type", "Start", "End", "Rent", "Status"].map((h) => <th key={h} style={thStyle}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredLeases.map((l) => {
+                const t = tenantById.get(Number(l.tenant_id));
+                const u = unitById.get(Number(l.unit_id));
+                const tenantName = t ? (`${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || `Tenant ${t.id}`) : `Tenant ${l.tenant_id}`;
+                const unitLabel = u ? ((u.label || "").trim() || `Unit ${u.id}`) : `Unit ${l.unit_id}`;
+
+                return (
+                  <tr key={l.id}>
+                    <td style={tdStyle}>{l.id}</td>
+                    <td style={tdStyle}>{tenantName}</td>
+                    <td style={tdStyle}>{unitLabel}</td>
+                    <td style={tdStyle}>{l.state || "-"}</td>
+                    <td style={tdStyle}>{l.lease_type || "-"}</td>
+                    <td style={tdStyle}>{l.start_date}</td>
+                    <td style={tdStyle}>{l.end_date ?? "-"}</td>
+                    <td style={tdStyle}>${Number(l.monthly_rent || 0).toFixed(2)}</td>
+                    <td style={tdStyle}>{l.status}</td>
+                  </tr>
+                );
+              })}
+              {filteredLeases.length === 0 ? (
+                <tr><td colSpan={9} style={{ padding: 12, color: "#6b7280" }}>No leases found.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {showModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 9999,
+          }}
+          onMouseDown={() => setShowModal(false)}
+        >
+          <div
+            style={{
+              width: "min(1000px, 100%)",
+              maxHeight: "86vh",
+              overflow: "auto",
+              background: "white",
+              borderRadius: 14,
+              padding: 16,
+              border: "1px solid #e5e7eb",
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <h3 style={{ margin: 0 }}>Create Lease</h3>
+              <button onClick={() => setShowModal(false)} style={{ ...buttonStyle, background: "white", color: "#111827" }}>Close</button>
+            </div>
+
+            <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>Lease Details</div>
+
+                <form onSubmit={createLease} style={{ display: "grid", gap: 10 }}>
+                  <select
+                    value={form.tenant_id}
+                    onChange={(e) => setForm((f) => ({ ...f, tenant_id: e.target.value }))}
+                    style={inputStyle}
+                    required
+                  >
+                    <option value="">Select tenant…</option>
+                    {(Array.isArray(tenants) ? tenants : []).map((t) => {
+                      const name = `${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || `Tenant ${t.id}`;
+                      return <option key={t.id} value={t.id}>{name}</option>;
+                    })}
+                  </select>
+
+                  <select
+                    value={form.unit_id}
+                    onChange={(e) => setForm((f) => ({ ...f, unit_id: e.target.value }))}
+                    style={inputStyle}
+                    required
+                  >
+                    <option value="">Select unit…</option>
+                    {filteredUnits.map((u) => (
+                      <option key={u.id} value={u.id}>#{u.id} {(u.label || "").trim() || `Unit ${u.id}`}</option>
+                    ))}
+                  </select>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <label>
+                      State
+                      <input
+                        value={form.state}
+                        onChange={(e) => {
+                          const s = (e.target.value || "").toUpperCase().slice(0, 2);
+                          setForm((f) => ({ ...f, state: s }));
+                        }}
+                        onBlur={() => loadRules((form.state || "MN").toUpperCase())}
+                        style={inputStyle}
+                        placeholder="MN"
+                      />
+                    </label>
+
+                    <label>
+                      Lease Type
+                      <select
+                        value={form.lease_type}
+                        onChange={(e) => setForm((f) => ({ ...f, lease_type: e.target.value }))}
+                        style={inputStyle}
+                      >
+                        <option value="fixed_term">fixed_term</option>
+                        <option value="month_to_month">month_to_month</option>
+                        <option value="open_ended">open_ended</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  {form.lease_type === "fixed_term" ? (
+                    <label>
+                      Term (months)
+                      <input
+                        value={form.term_months}
+                        onChange={(e) => setForm((f) => ({ ...f, term_months: e.target.value }))}
+                        style={inputStyle}
+                        placeholder="12"
+                      />
+                    </label>
+                  ) : null}
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <label>
+                      Start date
+                      <input
+                        type="date"
+                        value={form.start_date}
+                        onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))}
+                        style={inputStyle}
+                      />
+                    </label>
+
+                    <label>
+                      Rent due day (1–28)
+                      <input
+                        value={form.rent_due_day}
+                        onChange={(e) => setForm((f) => ({ ...f, rent_due_day: e.target.value }))}
+                        style={inputStyle}
+                        placeholder="1"
+                      />
+                    </label>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <label>
+                      Monthly rent
+                      <input
+                        value={form.monthly_rent}
+                        onChange={(e) => setForm((f) => ({ ...f, monthly_rent: e.target.value }))}
+                        style={inputStyle}
+                        placeholder="1500"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Security deposit (optional)
+                      <input
+                        value={form.security_deposit}
+                        onChange={(e) => setForm((f) => ({ ...f, security_deposit: e.target.value }))}
+                        style={inputStyle}
+                        placeholder="1500"
+                      />
+                    </label>
+                  </div>
+
+                  <label>
+                    Status
+                    <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} style={inputStyle}>
+                      <option value="active">active</option>
+                      <option value="pending">pending</option>
+                      <option value="ended">ended</option>
+                    </select>
+                  </label>
+
+                  <div style={{ display: "grid", gap: 8, marginTop: 6 }}>
+                    <div style={{ fontWeight: 700 }}>Clause toggles</div>
+                    {Object.keys(form.clauses || {}).map((k) => (
+                      <label key={k} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={!!form.clauses[k]}
+                          onChange={(e) => setForm((f) => ({ ...f, clauses: { ...(f.clauses || {}), [k]: e.target.checked } }))}
+                        />
+                        <span>{k}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 10 }}>
+                    <button type="button" onClick={() => setShowModal(false)} style={{ ...buttonStyle, background: "white", color: "#111827" }}>
+                      Cancel
+                    </button>
+                    <button type="submit" style={buttonStyle} disabled={loading}>
+                      {loading ? "Working..." : "Create Lease"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>State checklist (drafting aid)</div>
+                <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 10 }}>
+                  This is a checklist helper — not legal advice. Verify with your attorney for each state.
+                </div>
+
+                {rulesErr ? <div style={alertStyle}>{String(rulesErr)}</div> : null}
+
+                {rules ? (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <div style={{ fontWeight: 700 }}>{rules.state_name || form.state}</div>
+
+                    <div>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>Required disclosures</div>
+                      {(rules.required_disclosures || []).length ? (
+                        <ul style={{ margin: 0, paddingLeft: 18 }}>
+                          {(rules.required_disclosures || []).map((d, idx) => (
+                            <li key={idx} style={{ marginBottom: 6 }}>
+                              <div style={{ fontWeight: 600 }}>{d.title}</div>
+                              {d.note ? <div style={{ opacity: 0.8 }}>{d.note}</div> : null}
+                              {d.source ? <div style={{ opacity: 0.7, fontSize: 12 }}>Source: {d.source}</div> : null}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div style={{ opacity: 0.7 }}>No checklist configured yet.</div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>Suggested clauses</div>
+                      {(rules.default_clauses || []).length ? (
+                        <ul style={{ margin: 0, paddingLeft: 18 }}>
+                          {(rules.default_clauses || []).map((c, idx) => (
+                            <li key={idx}>{c.title}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div style={{ opacity: 0.7 }}>None.</div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.7 }}>Loading rules…</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const cardStyle = { background: "white", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb" };
+const inputStyle = { width: "100%", padding: "10px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "white" };
+const buttonStyle = { padding: "10px 12px", borderRadius: 10, border: "1px solid #111827", background: "#111827", color: "white", fontWeight: 700, cursor: "pointer" };
+const thStyle = { textAlign: "left", padding: "10px 8px", borderBottom: "1px solid #e5e7eb", color: "#374151" };
+const tdStyle = { padding: "10px 8px", borderBottom: "1px solid #f3f4f6" };
+const alertStyle = { background: "#fee2e2", border: "1px solid #fecaca", padding: 10, borderRadius: 10, marginTop: 12 };

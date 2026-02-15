@@ -1,0 +1,388 @@
+﻿import React, { useEffect, useMemo, useState } from "react";
+import api from "../api/api";
+function isoToday() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+function isoOneYearFromToday() {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() + 1);
+  return d.toISOString().slice(0, 10);
+}
+function Modal({ title, open, onClose, children }) {
+  if (!open) return null;
+  return (
+    <div style={styles.overlay} onMouseDown={onClose}>
+      <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={{ fontWeight: 800, fontSize: 18 }}>{title}</div>
+          <button style={styles.btnGhost} onClick={onClose}>✕</button>
+        </div>
+        <div style={styles.modalBody}>{children}</div>
+      </div>
+    </div>
+  );
+}
+export default function LeasesPage() {
+  const [leases, setLeases] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [tenants, setTenants] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false);
+  const [stateRules, setStateRules] = useState(null);
+  const [rulesErr, setRulesErr] = useState("");
+  const [form, setForm] = useState(() => ({
+    tenant_id: "",
+    unit_id: "",
+    state: "MN",
+    lease_type: "fixed_term", // fixed_term | month_to_month | open_ended
+    term_months: 12,
+    start_date: isoToday(),
+    end_date: isoOneYearFromToday(),
+    monthly_rent: 1500,
+    security_deposit: 1500,
+    rent_due_day: 1,
+    status: "active",
+    clauses_json: {},
+    notes: "",
+  }));
+  async function refreshAll() {
+    setLoading(true);
+    setErr("");
+    try {
+      const [l, u, t] = await Promise.all([
+        api.get("/leases"),
+        api.get("/units"),
+        api.get("/tenants"),
+      ]);
+      setLeases(l.data || []);
+      setUnits(u.data || []);
+      setTenants(t.data || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    refreshAll();
+  }, []);
+  const unitOptions = useMemo(() => {
+    return (units || []).map((u) => ({
+      id: u.id,
+      label: `${u.label || "Unit"} (Beds ${u.bedrooms ?? "?"} / Baths ${u.bathrooms ?? "?"} / Prop ${u.property_id})`,
+    }));
+  }, [units]);
+  const tenantOptions = useMemo(() => {
+    return (tenants || []).map((t) => ({
+      id: t.id,
+      label: `${t.first_name || ""} ${t.last_name || ""}`.trim() || t.email || `Tenant ${t.id}`,
+    }));
+  }, [tenants]);
+  
+  
+  
+  const tenantLabelById = useMemo(() => {
+    const m = {};
+    (tenantOptions || []).forEach((t) => { m[t.id] = t.label; });
+    return m;
+  }, [tenantOptions]);
+  const unitLabelById = useMemo(() => {
+    const m = {};
+    (unitOptions || []).forEach((u) => { m[u.id] = u.label; });
+    return m;
+  }, [unitOptions]);
+function openCreate() {
+    setRulesErr("");
+    setStateRules(null);
+    setForm({
+      tenant_id: tenantOptions[0]?.id ?? "",
+      unit_id: unitOptions[0]?.id ?? "",
+      state: "MN",
+      lease_type: "fixed_term",
+      term_months: 12,
+      start_date: isoToday(),
+      end_date: isoOneYearFromToday(),
+      monthly_rent: 1500,
+      security_deposit: 1500,
+      rent_due_day: 1,
+      status: "active",
+      clauses_json: {},
+      notes: "",
+    });
+    setOpen(true);
+  }
+  async function loadRules(st) {
+    setRulesErr("");
+    setStateRules(null);
+    try {
+      const r = await api.get(`/lease-builder/rules/${st}`);
+      setStateRules(r.data);
+      // pre-toggle default clauses on
+      const defaults = {};
+      (r.data?.default_clauses || []).forEach((c) => { defaults[c.key] = true; });
+      setForm((f) => ({ ...f, clauses_json: { ...(f.clauses_json || {}), ...defaults } }));
+    } catch (e) {
+      setRulesErr(e?.response?.data?.detail || e.message || "Failed to load rules");
+    }
+  }
+  function onChange(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+  function syncDatesForType(nextType) {
+    if (nextType === "fixed_term") {
+      onChange("term_months", 12);
+      onChange("end_date", isoOneYearFromToday());
+    } else {
+      onChange("term_months", null);
+      onChange("end_date", "");
+    }
+  }
+  async function createLease() {
+    setErr("");
+    try {
+      const payload = {
+        ...form,
+        tenant_id: Number(form.tenant_id),
+        unit_id: Number(form.unit_id),
+        term_months: form.lease_type === "fixed_term" ? Number(form.term_months || 12) : null,
+        start_date: form.start_date || isoToday(),
+        end_date: form.lease_type === "fixed_term" ? (form.end_date || isoOneYearFromToday()) : null,
+        monthly_rent: Number(form.monthly_rent || 0),
+        security_deposit: Number(form.security_deposit || 0),
+        rent_due_day: Math.min(28, Math.max(1, Number(form.rent_due_day || 1))),
+        clauses_json: form.clauses_json || {},
+      };
+      await api.post("/leases", payload);
+      setOpen(false);
+      await refreshAll();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Create failed");
+    }
+  }
+  async function deleteLease(id) {
+    if (!confirm("Delete this lease?")) return;
+    setErr("");
+    try {
+      await api.delete(`/leases/${id}`);
+      await refreshAll();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Delete failed");
+    }
+  }
+  return (
+    <div style={styles.page}>
+      <div style={styles.headerRow}>
+        <div>
+          <div style={styles.h1}>Leases</div>
+          <div style={styles.sub}>Create fixed-term, month-to-month, or open-ended leases. Defaults prevent date errors.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.btn} onClick={refreshAll} disabled={loading}>Refresh</button>
+          <button style={styles.btnPrimary} onClick={openCreate}>Create Lease</button>
+        </div>
+      </div>
+      {err ? <div style={styles.alert}>{String(err)}</div> : null}
+      <div style={styles.card}>
+        <div style={styles.cardHeader}>Existing Leases</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Tenant</th>
+                <th>Unit</th>
+                <th>State</th>
+                <th>Type</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Rent</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(leases || []).map((l) => (
+                <tr key={l.id}>
+                  <td>{l.id}</td>
+                  <td>{tenantLabelById[l.tenant_id] || l.tenant_id}</td>
+                  <td>{unitLabelById[l.unit_id] || l.unit_id}</td>
+                  <td>{l.state}</td>
+                  <td>{l.lease_type}</td>
+                  <td>{l.start_date}</td>
+                  <td>{l.end_date ?? ""}</td>
+                  <td>${Number(l.monthly_rent || 0).toFixed(2)}</td>
+                  <td>{l.status}</td>
+                  <td style={{ textAlign: "right" }}>
+                    <button style={styles.btnDanger} onClick={() => deleteLease(l.id)}>Delete</button>
+                  </td>
+                </tr>
+              ))}
+              {(!leases || leases.length === 0) ? (
+                <tr><td colSpan={10} style={{ padding: 16, color: "#475569" }}>No leases yet.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <Modal title="Create Lease" open={open} onClose={() => setOpen(false)}>
+        <div style={styles.grid2}>
+          <div>
+            <label style={styles.label}>Tenant</label>
+            <select style={styles.input} value={form.tenant_id} onChange={(e) => onChange("tenant_id", e.target.value)}>
+              {tenantOptions.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={styles.label}>Unit</label>
+            <select style={styles.input} value={form.unit_id} onChange={(e) => onChange("unit_id", e.target.value)}>
+              {unitOptions.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={styles.label}>State</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input style={styles.input} value={form.state} onChange={(e) => onChange("state", e.target.value.toUpperCase())} />
+              <button style={styles.btn} onClick={() => loadRules(form.state || "MN")}>Load Rules</button>
+            </div>
+            {rulesErr ? <div style={styles.smallErr}>{rulesErr}</div> : null}
+          </div>
+          <div>
+            <label style={styles.label}>Lease Type</label>
+            <select
+              style={styles.input}
+              value={form.lease_type}
+              onChange={(e) => {
+                const v = e.target.value;
+                onChange("lease_type", v);
+                syncDatesForType(v);
+              }}
+              >
+              <option value="fixed_term">Fixed Term</option>
+              <option value="month_to_month">Month-to-Month</option>
+              <option value="open_ended">Open-ended</option>
+            </select>
+          </div>
+          <div>
+            <label style={styles.label}>Start Date</label>
+            <input type="date" style={styles.input} value={form.start_date} onChange={(e) => onChange("start_date", e.target.value)} />
+          </div>
+          <div>
+            <label style={styles.label}>End Date</label>
+            <input
+              type="date"
+              style={styles.input}
+              value={form.end_date || ""}
+              onChange={(e) => onChange("end_date", e.target.value)}
+              disabled={form.lease_type !== "fixed_term"}
+            />
+            {form.lease_type !== "fixed_term" ? <div style={styles.smallNote}>Not required for month-to-month/open-ended.</div> : null}
+          </div>
+          <div>
+            <label style={styles.label}>Monthly Rent</label>
+            <input type="number" style={styles.input} value={form.monthly_rent} onChange={(e) => onChange("monthly_rent", e.target.value)} />
+          </div>
+          <div>
+            <label style={styles.label}>Security Deposit</label>
+            <input type="number" style={styles.input} value={form.security_deposit} onChange={(e) => onChange("security_deposit", e.target.value)} />
+          </div>
+          <div>
+            <label style={styles.label}>Rent Due Day</label>
+            <input type="number" style={styles.input} value={form.rent_due_day} onChange={(e) => onChange("rent_due_day", e.target.value)} />
+          </div>
+          <div>
+            <label style={styles.label}>Status</label>
+            <select style={styles.input} value={form.status} onChange={(e) => onChange("status", e.target.value)}>
+              <option value="active">active</option>
+              <option value="draft">draft</option>
+              <option value="ended">ended</option>
+            </select>
+          </div>
+        </div>
+        {stateRules ? (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>
+              {stateRules.state_name} – Clauses & Disclosures
+            </div>
+            <div style={styles.rulesWrap}>
+              <div style={styles.rulesCol}>
+                <div style={styles.rulesTitle}>Required Disclosures</div>
+                {(stateRules.required_disclosures || []).map((d) => (
+                  <div key={d.key} style={styles.ruleItem}>
+                    <div style={{ fontWeight: 700 }}>{d.title}</div>
+                    <div style={styles.ruleNote}>{d.note}</div>
+                    <div style={styles.ruleSrc}>{d.source}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={styles.rulesCol}>
+                <div style={styles.rulesTitle}>Default Clauses (toggle)</div>
+                {(stateRules.default_clauses || []).map((c) => (
+                  <label key={c.key} style={styles.toggleRow}>
+                    <input
+                      type="checkbox"
+                      checked={!!(form.clauses_json || {})[c.key]}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setForm((f) => ({
+                          ...f,
+                          clauses_json: { ...(f.clauses_json || {}), [c.key]: checked },
+                        }));
+                      }}
+                    />
+                    <span style={{ marginLeft: 8 }}>{c.title}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+        <div style={{ marginTop: 16 }}>
+          <label style={styles.label}>Notes</label>
+          <textarea style={{ ...styles.input, height: 90 }} value={form.notes} onChange={(e) => onChange("notes", e.target.value)} />
+        </div>
+        <div style={styles.modalFooter}>
+          <button style={styles.btn} onClick={() => setOpen(false)}>Cancel</button>
+          <button style={styles.btnPrimary} onClick={createLease}>Create Lease</button>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+const styles = {
+  page: { padding: 16, color: "#0f172a" },
+  h1: { fontSize: 26, fontWeight: 900, marginBottom: 4 },
+  sub: { color: "#475569" },
+  headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 16 },
+  alert: { background: "#fff7ed", border: "1px solid #fdba74", color: "#7c2d12", padding: 12, borderRadius: 12, marginBottom: 12 },
+  card: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, overflow: "hidden" },
+  cardHeader: { padding: 12, fontWeight: 800, borderBottom: "1px solid #e2e8f0" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  btn: { background: "#fff", border: "1px solid #cbd5e1", padding: "10px 12px", borderRadius: 10, fontWeight: 700, cursor: "pointer" },
+  btnPrimary: { background: "#2563eb", border: "1px solid #2563eb", color: "#fff", padding: "10px 12px", borderRadius: 10, fontWeight: 800, cursor: "pointer" },
+  btnDanger: { background: "#fee2e2", border: "1px solid #fecaca", color: "#7f1d1d", padding: "8px 10px", borderRadius: 10, fontWeight: 800, cursor: "pointer" },
+  overlay: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 50 },
+  modal: { width: "min(980px, 96vw)", maxHeight: "90vh", overflow: "auto", background: "#fff", borderRadius: 16, border: "1px solid #e2e8f0", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", borderBottom: "1px solid #e2e8f0" },
+  modalBody: { padding: 14 },
+  modalFooter: { display: "flex", justifyContent: "flex-end", gap: 10, paddingTop: 14 },
+  btnGhost: { background: "transparent", border: "1px solid #cbd5e1", width: 36, height: 36, borderRadius: 10, cursor: "pointer", fontWeight: 900 },
+  label: { display: "block", fontSize: 12, fontWeight: 800, color: "#334155", marginBottom: 6 },
+  input: { width: "100%", padding: "10px 10px", borderRadius: 10, border: "1px solid #cbd5e1", background: "#fff" },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+  smallNote: { marginTop: 6, fontSize: 12, color: "#64748b" },
+  smallErr: { marginTop: 6, fontSize: 12, color: "#b91c1c" },
+  rulesWrap: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 8 },
+  rulesCol: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 12, padding: 10 },
+  rulesTitle: { fontWeight: 900, marginBottom: 8 },
+  ruleItem: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 10, marginBottom: 10 },
+  ruleNote: { color: "#475569", fontSize: 12, marginTop: 4 },
+  ruleSrc: { color: "#64748b", fontSize: 12, marginTop: 6 },
+  toggleRow: { display: "flex", alignItems: "center", padding: "6px 0", fontWeight: 700, color: "#0f172a" },
+};
+
+
+
+
+

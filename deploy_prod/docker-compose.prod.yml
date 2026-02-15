@@ -1,0 +1,66 @@
+﻿services:
+  caddy:
+    image: caddy:2
+    container_name: happyrentals-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: happyrentals-app
+    env_file:
+      - .env.prod
+    depends_on:
+      - postgres
+      - minio
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: happyrentals-postgres
+    environment:
+      POSTGRES_USER: happyrentals
+      POSTGRES_PASSWORD: nu7eaPRo26nsvR1x_vM4SShWmBfp-hJP
+      POSTGRES_DB: happyrentals
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: happyrentals-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: 4_FmhZWrb8aPxMg-CvzSATqsbNgSig1P
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    # Security: do NOT expose MinIO to the internet by default.
+    # If you ever need the console, use SSH tunneling to 9001.
+
+  mc:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin 4_FmhZWrb8aPxMg-CvzSATqsbNgSig1P &&
+      mc mb --ignore-existing local/happyrentals-private &&
+      exit 0
+      "
+    restart: "no"
+
+volumes:
+  pgdata:
+  minio_data:
+  caddy_data:
+  caddy_config:

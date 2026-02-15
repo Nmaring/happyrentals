@@ -1,0 +1,93 @@
+﻿import React, { useEffect, useState } from "react";
+import { NavLink, Outlet } from "react-router-dom";
+
+const TOKEN_KEY = "hr_token";
+
+function NavItem({ to, label }) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) => (isActive ? "active" : "")}
+      end={to === "/"}
+    >
+      {label}
+    </NavLink>
+  );
+}
+
+export default function AppLayout() {
+  const [me, setMe] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let on = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/auth/me");
+        const j = await r.json().catch(() => null);
+        if (on && r.ok) setMe(j);
+      } catch {}
+      finally { if (on) setLoading(false); }
+    })();
+    return () => { on = false; };
+  }, []);
+
+  const role = me?.role || "owner";
+
+  const landlordLinks = [
+    { to: "/properties", label: "Properties" },
+    { to: "/units", label: "Units" },
+    { to: "/tenants", label: "Tenants" },
+    { to: "/invite-tenants", label: "Invite Tenants" },
+    { to: "/leases", label: "Leases" },
+    { to: "/payments", label: "Payments" },
+    { to: "/maintenance", label: "Maintenance" },
+    { to: "/billing", label: "Billing" },
+  ];
+
+  const tenantLinks = [
+    { to: "/tenant", label: "Tenant Portal" },
+  ];
+
+  function logout() {
+    try { localStorage.removeItem(TOKEN_KEY); } catch {}
+    fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    window.location.href = "/login";
+  }
+
+  return (
+    <div className="hr-shell">
+      <aside className="hr-card hr-sidebar">
+        <div className="hr-brand">
+          <h1>HappyRentals</h1>
+          <div className="sub">
+            {loading ? "Loading…" : (me?.email ? `${me.email} (${role})` : "Not logged in")}
+          </div>
+        </div>
+
+        <nav className="hr-nav">
+          {(role === "tenant" ? tenantLinks : landlordLinks).map((x) => (
+            <NavItem key={x.to} to={x.to} label={x.label} />
+          ))}
+        </nav>
+
+        <div style={{ marginTop: "auto", padding: "0 10px 10px 10px" }}>
+          <button className="hr-btn" onClick={logout}>Log out</button>
+        </div>
+      </aside>
+
+      <main className="hr-main">
+        <div className="hr-card hr-topbar">
+          <div style={{ fontWeight: 700 }}>Dashboard</div>
+          <div style={{ color: "var(--muted)", fontSize: 12 }}>
+            {role === "tenant" ? "Tenant view" : "Landlord view"}
+          </div>
+        </div>
+
+        <div className="hr-card hr-content">
+          <Outlet />
+        </div>
+      </main>
+    </div>
+  );
+}
