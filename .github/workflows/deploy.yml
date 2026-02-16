@@ -1,42 +1,20 @@
-name: Deploy HappyRentals
+name: Deploy to server
 
 on:
-  push:
-    branches: [ "main" ]
+  workflow_run:
+    workflows: ["Publish prod image"]
+    types: [completed]
 
 permissions:
   contents: read
   packages: read
 
 jobs:
-  build-and-deploy:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-      packages: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-  ghcr.io/${{ github.repository_owner }}/happyrentals:prod
-  ghcr.io/${{ github.repository_owner }}/happyrentals:${{ github.sha }}
-
-
       - name: Deploy on server (SSH)
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -46,7 +24,6 @@ jobs:
           script: |
             set -e
             cd /opt/happyrentals
-            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d
-            docker image prune -f

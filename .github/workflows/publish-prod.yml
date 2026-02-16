@@ -1,4 +1,4 @@
-﻿name: Publish prod image
+name: Publish prod image
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # nmaring/happyrentals
+  IMAGE_NAME: nmaring/happyrentals
   TAG: prod
 
 jobs:
