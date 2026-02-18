@@ -8,3 +8,6 @@ __pycache__/
 .env
 .env.*
 .DS_Store
+image.env
+image.env.prev
+--jq
