@@ -1,6 +1,6 @@
 ﻿services:
   app:
-    image: ghcr.io/YOUR_GITHUB_USERNAME/happyrentals:latest
+    image: ghcr.io/nmaring/happyrentals:${IMAGE_TAG}
     container_name: happyrentals-app
     env_file:
       - .env.prod
@@ -23,5 +23,6 @@
 
 volumes:
   happyrentals_pgdata:
+
 
 
