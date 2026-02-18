@@ -1,0 +1,57 @@
+﻿name: Build & Deploy (staging)
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: nmaring/happyrentals
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push (sha + staging)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:staging
+
+  deploy-staging:
+    needs: build-push
+    runs-on: ubuntu-latest
+    # If you don't set STAGING_HOST, this job is skipped (so pipeline still succeeds)
+    if: ${{ secrets.STAGING_HOST != '' }}
+    steps:
+      - name: Deploy to staging host (SSH)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            set -e
+            docker pull ghcr.io/nmaring/happyrentals:staging
+            docker stop happyrentals || true
+            docker rm happyrentals || true
+            # CHANGE 80:8080 IF YOUR APP USES A DIFFERENT PORT
+            docker run -d --restart=always --name happyrentals -p 80:8080 ghcr.io/nmaring/happyrentals:staging

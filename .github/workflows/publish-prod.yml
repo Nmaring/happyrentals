@@ -1,9 +1,12 @@
-name: Publish prod image
+﻿name: Publish prod image
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "Tag to promote to prod (use 'staging' or a commit SHA tag)"
+        required: true
+        default: "staging"
 
 permissions:
   contents: read
@@ -11,31 +14,46 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: nmaring/happyrentals
-  TAG: prod
+  IMAGE: nmaring/happyrentals
 
 jobs:
-  build-and-push:
+  promote:
     runs-on: ubuntu-latest
+    environment: production
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - name: Promote tag to prod (no rebuild)
+        run: |
+          set -e
+          SRC="${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ inputs.source_tag }}"
+          DST="${{ env.REGISTRY }}/${{ env.IMAGE }}:prod"
+          echo "Promoting $SRC -> $DST"
+          docker buildx imagetools create -t "$DST" "$SRC"
+          docker buildx imagetools inspect "$DST"
+
+  deploy-prod:
+    needs: promote
+    runs-on: ubuntu-latest
+    if: ${{ secrets.PROD_HOST != '' }}
+    steps:
+      - name: Deploy to prod host (SSH)
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            set -e
+            docker pull ghcr.io/nmaring/happyrentals:prod
+            docker stop happyrentals || true
+            docker rm happyrentals || true
+            # CHANGE 80:8080 IF YOUR APP USES A DIFFERENT PORT
+            docker run -d --restart=always --name happyrentals -p 80:8080 ghcr.io/nmaring/happyrentals:prod

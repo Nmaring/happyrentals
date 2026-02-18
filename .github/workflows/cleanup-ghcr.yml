@@ -1,0 +1,38 @@
+﻿name: Cleanup GHCR untagged versions
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"   # daily
+
+permissions:
+  contents: read
+
+env:
+  OWNER: Nmaring
+  PACKAGE: happyrentals
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete untagged GHCR versions
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN }}
+        run: |
+          set -e
+          echo "Finding untagged versions for ${OWNER}/${PACKAGE}..."
+          ids=$(gh api "/users/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100" --paginate \
+            --jq '.[] | select((.metadata.container.tags // []) | length == 0) | .id')
+
+          if [ -z "$ids" ]; then
+            echo "No untagged versions found."
+            exit 0
+          fi
+
+          for id in $ids; do
+            echo "Deleting version id=$id"
+            gh api -X DELETE "/users/${OWNER}/packages/container/${PACKAGE}/versions/${id}"
+          done
+
+          echo "Done."
